@@ -1,0 +1,46 @@
+# Global agent tool configuration for the Podman agent sandbox.
+# This file is copied into the image and seeded to /root/.config/mise/config.toml
+# by the entrypoint on first container start.
+#
+# Language runtimes are pinned to major versions for reproducibility.
+# Bump intentionally and document the reason.
+
+[tools]
+# Language runtimes (core backends, pinned major versions)
+node = "22"
+python = "3.12"
+
+# Agent CLIs
+# opencode uses the mise registry shorthand (aqua backend) — pre-built binary,
+# no node dependency at install time.
+opencode = "latest"
+# codex uses the npm backend (no aqua registry entry confirmed).
+"npm:@openai/codex" = "latest"
+
+# CLI utilities (aqua backend via registry shorthand)
+# jq is installed via apt (system-wide, always available) — not duplicated here.
+ripgrep = "latest"
+fd = "latest"
+
+[settings]
+experimental = true
+
+# These tasks are for manual `mise run <task>` use inside the container.
+# The CLI uses `mise exec --` directly, not `mise run`.
+[tasks.opencode]
+description = "Launch OpenCode"
+run = "opencode"
+
+[tasks.codex]
+description = "Launch Codex"
+run = "codex"
+
+[tasks.shell]
+description = "Open an interactive Bash shell"
+run = "bash"
+
+# Host-side task: install a wrapper script to ~/.local/bin so agent-sandbox
+# is callable from anywhere. Not used inside the container.
+[tasks.install]
+description = "Install agent-sandbox wrapper to ~/.local/bin"
+run = "bash scripts/install.sh"

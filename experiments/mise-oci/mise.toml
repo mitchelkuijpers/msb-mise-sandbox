@@ -1,0 +1,66 @@
+# Experimental mise.toml for mise oci image building.
+# This is NOT the primary mise.toml — see the project root mise.toml for the
+# stable configuration used with the Containerfile.
+#
+# Build: MISE_EXPERIMENTAL=1 mise oci build --from ubuntu:24.04 --tag agent-dev:latest
+
+[oci]
+from = "ubuntu:24.04"
+workdir = "/workspace"
+entrypoint = ["/usr/local/bin/agent-entrypoint"]
+cmd = ["sleep", "infinity"]
+user = "root"
+
+[oci.env]
+HOME = "/root"
+MISE_DATA_DIR = "/root/.local/share/mise"
+MISE_CONFIG_DIR = "/root/.config/mise"
+PATH = "/root/.local/bin:/root/.local/share/mise/shims:${PATH}"
+
+# System packages (apt only in mise oci)
+[bootstrap.packages]
+"apt:bash" = "latest"
+"apt:build-essential" = "latest"
+"apt:ca-certificates" = "latest"
+"apt:curl" = "latest"
+"apt:file" = "latest"
+"apt:git" = "latest"
+"apt:jq" = "latest"
+"apt:less" = "latest"
+"apt:openssh-client" = "latest"
+"apt:pkg-config" = "latest"
+"apt:procps" = "latest"
+"apt:rsync" = "latest"
+"apt:sudo" = "latest"
+"apt:tar" = "latest"
+"apt:unzip" = "latest"
+"apt:xz-utils" = "latest"
+"apt:zip" = "latest"
+"apt:vim-tiny" = "latest"
+"apt:dnsutils" = "latest"
+"apt:iproute2" = "latest"
+"apt:iputils-ping" = "latest"
+"apt:netcat-openbsd" = "latest"
+
+[tools]
+node = "22"
+python = "3.12"
+opencode = "latest"
+"npm:@openai/codex" = "latest"
+ripgrep = "latest"
+fd = "latest"
+
+[settings]
+experimental = true
+
+[tasks.opencode]
+description = "Launch OpenCode"
+run = "opencode"
+
+[tasks.codex]
+description = "Launch Codex"
+run = "codex"
+
+[tasks.shell]
+description = "Open an interactive Bash shell"
+run = "bash"

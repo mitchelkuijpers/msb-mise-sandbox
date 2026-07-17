@@ -1,0 +1,724 @@
+#!/usr/bin/env bash
+# agent-sandbox — CLI wrapper for the Podman agent sandbox.
+#
+# Manages a persistent rootless Podman container that runs a coding agent as
+# root inside the container. The container mounts a project directory at
+# /workspace and persists agent tools/caches/config in a named volume at /root.
+#
+# Usage:
+#   agent-sandbox build
+#   agent-sandbox create [project-path]
+#   agent-sandbox start [project-path]
+#   agent-sandbox stop [project-path]
+#   agent-sandbox remove [project-path]
+#   agent-sandbox shell [project-path]
+#   agent-sandbox opencode [project-path]
+#   agent-sandbox codex [project-path]
+#   agent-sandbox exec [project-path] -- command...
+#   agent-sandbox ssh [project-path]
+#   agent-sandbox herdr [project-path]
+#   agent-sandbox status [project-path]
+#   agent-sandbox logs [project-path]
+#   agent-sandbox rebuild [project-path]
+#
+# Environment variables (flags override):
+#   AGENT_IMAGE             Image name (default: localhost/agent-dev:latest)
+#   AGENT_CPUS              CPU limit (default: 4)
+#   AGENT_MEMORY            Memory limit (default: 8g)
+#   AGENT_PIDS_LIMIT        PID limit (default: 4096)
+#   AGENT_NETWORK           Network mode: default|none (default: default)
+#   AGENT_FORWARD_ENV       Comma-separated env vars to forward (default: TERM,COLORTERM,LANG)
+#   AGENT_WORKSPACE_MODE    Workspace mode: bind (default; only bind implemented)
+#   AGENT_NO_NEW_PRIVILEGES 1|0 (default: 1)
+#   AGENT_SSH              Enable SSH server: 1|0 (default: 1)
+#   AGENT_SSH_PORT         Host port for SSH (default: 2222)
+#   AGENT_PROXY_URL         Reserved for future credential proxy (not implemented)
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+AGENT_IMAGE="${AGENT_IMAGE:-localhost/agent-dev:latest}"
+AGENT_CPUS="${AGENT_CPUS:-4}"
+AGENT_MEMORY="${AGENT_MEMORY:-8g}"
+AGENT_PIDS_LIMIT="${AGENT_PIDS_LIMIT:-4096}"
+AGENT_NETWORK="${AGENT_NETWORK:-default}"
+AGENT_FORWARD_ENV="${AGENT_FORWARD_ENV:-TERM,COLORTERM,LANG}"
+AGENT_SSH="${AGENT_SSH:-1}"
+AGENT_SSH_PORT="${AGENT_SSH_PORT:-2222}"
+AGENT_WORKSPACE_MODE="${AGENT_WORKSPACE_MODE:-bind}"
+AGENT_NO_NEW_PRIVILEGES="${AGENT_NO_NEW_PRIVILEGES:-1}"
+# AGENT_PROXY_URL is reserved for future use (credential proxy). Not implemented.
+
+# Capabilities to drop (safe for a dev sandbox where root installs packages).
+CAPS_DROP="SYS_ADMIN,SYS_MODULE,SYS_RAWIO,SYS_BOOT,NET_ADMIN,SYS_TIME,SYSLOG"
+
+# Script directory (for finding the build context).
+# Resolve symlinks so `build` finds the build context even when invoked
+# through a symlink (e.g. ln -s .../bin/agent-sandbox ~/.local/bin).
+_source="${BASH_SOURCE[0]}"
+while [ -L "$_source" ]; do
+  _dir="$(cd -P "$(dirname "$_source")" && pwd)"
+  _source="$(readlink "$_source")"
+  [[ "$_source" != /* ]] && _source="$_dir/$_source"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$_source")" && pwd)"
+BUILD_CONTEXT="$(dirname "$SCRIPT_DIR")"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Print error to stderr and exit. Uses printf %b to interpret \n in messages.
+die() {
+  printf 'Error: %b\n' "$*" >&2
+  exit 1
+}
+
+# Print info message.
+info() {
+  echo "[agent-sandbox] $*"
+}
+
+# Validate configuration.
+case "$AGENT_NO_NEW_PRIVILEGES" in
+  0|1) ;;
+  *) die "AGENT_NO_NEW_PRIVILEGES must be 0 or 1, got: $AGENT_NO_NEW_PRIVILEGES" ;;
+esac
+
+# Resolve and validate a project path. Defaults to cwd.
+resolve_project_path() {
+  local raw="${1:-.}"
+  local abs
+  abs="$(cd "$raw" && pwd -P)" || die "Cannot resolve project path: $raw"
+  [[ -d "$abs" ]] || die "Project path is not a directory: $abs"
+  echo "$abs"
+}
+
+# Generate a stable name from the absolute project path.
+# Format: agent-<sanitized-name>-<8char-hash>
+# The hash is the first 8 chars of sha256 of the absolute path.
+generate_name() {
+  local project_path="$1"
+  local prefix="$2"  # "agent-" or "agent-home-" or "agent-workspace-"
+  local basename
+  local hash
+  local sanitized
+
+  basename="$(basename "$project_path")"
+  hash="$(printf '%s' "$project_path" | shasum -a 256 | cut -c1-8)"
+  # Sanitize basename for Podman compatibility: lowercase, replace non-alnum with -
+  sanitized="$(echo "$basename" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '-' | sed 's/^-//;s/-$//')"
+  # Ensure non-empty
+  [[ -n "$sanitized" ]] || sanitized="project"
+
+  echo "${prefix}${sanitized}-${hash}"
+}
+
+container_name() { generate_name "$1" "agent-"; }
+home_volume_name() { generate_name "$1" "agent-home-"; }
+workspace_volume_name() { generate_name "$1" "agent-workspace-"; }
+
+# Check if Podman is installed.
+require_podman() {
+  command -v podman >/dev/null 2>&1 || die "Podman is not installed. Install it from https://podman.io/"
+}
+
+# Check if Podman machine is running (macOS only).
+require_machine_running() {
+  if [[ "$(uname)" == "Darwin" ]]; then
+    local state
+    state="$(podman machine list --format '{{.Running}}' 2>/dev/null | head -1)" || true
+    if [[ "$state" != "true" ]]; then
+      die "Podman machine is not running. Start it with: podman machine start"
+    fi
+  fi
+}
+
+# Check if a container exists. Returns 0 if exists, 1 if not.
+container_exists() {
+  local name="$1"
+  podman container inspect "$name" --format '{{.Name}}' >/dev/null 2>&1
+}
+
+# Check if a container is running.
+container_running() {
+  local name="$1"
+  [[ "$(podman container inspect "$name" --format '{{.State.Status}}' 2>/dev/null)" == "running" ]]
+}
+
+# Check if a volume exists.
+volume_exists() {
+  local name="$1"
+  podman volume inspect "$name" --format '{{.Name}}' >/dev/null 2>&1
+}
+
+# Get the marker file status (1 if initialized, 0 if not).
+is_initialized() {
+  local name="$1"
+  if container_running "$name"; then
+    podman exec "$name" test -f /root/.agent-sandbox-initialized 2>/dev/null
+  else
+    return 1
+  fi
+}
+
+# Verify a container exists and is running. Used by interactive/exec commands.
+require_container_running() {
+  local name="$1" project_path="$2"
+  if ! container_exists "$name"; then
+    die "Container does not exist: $name\nCreate it first with: agent-sandbox create $project_path"
+  fi
+  if ! container_running "$name"; then
+    die "Container is not running: $name\nStart it first with: agent-sandbox start $project_path"
+  fi
+}
+
+# Build the env var forwarding flags for podman create.
+build_env_flags() {
+  local flags=()
+  IFS=',' read -ra env_vars <<< "$AGENT_FORWARD_ENV"
+  for var in "${env_vars[@]}"; do
+    var="$(echo "$var" | tr -d '[:space:]')"
+    [[ -n "$var" ]] || continue
+    # Only forward if the var is set in the current environment.
+    if [[ -n "${!var:-}" ]]; then
+      flags+=(--env "$var=${!var}")
+    fi
+  done
+  printf '%s\n' "${flags[@]}"
+}
+
+# Build the security flags for podman create.
+build_security_flags() {
+  local flags=()
+
+  # Drop capabilities
+  local cap
+  IFS=',' read -ra caps <<< "$CAPS_DROP"
+  for cap in "${caps[@]}"; do
+    flags+=(--cap-drop "$cap")
+  done
+
+  # No-new-privileges (configurable)
+  if [[ "$AGENT_NO_NEW_PRIVILEGES" == "1" ]]; then
+    flags+=(--security-opt=no-new-privileges)
+  fi
+
+  printf '%s\n' "${flags[@]}"
+}
+
+# ---------------------------------------------------------------------------
+# SSH helpers
+# ---------------------------------------------------------------------------
+
+# Path to the dedicated SSH key pair for agent-sandbox.
+ssh_key_path() {
+  echo "$HOME/.ssh/agent-sandbox-ed25519"
+}
+
+# Ensure the dedicated SSH key pair exists. Generates if missing.
+ensure_ssh_keys() {
+  local key_file
+  key_file="$(ssh_key_path)"
+  if [[ ! -f "$key_file" ]]; then
+    info "Generating SSH key pair for agent-sandbox..."
+    mkdir -p "$HOME/.ssh"
+    ssh-keygen -t ed25519 -f "$key_file" -N "" -C "agent-sandbox" >/dev/null 2>&1
+    info "Generated: $key_file"
+  fi
+}
+
+# Ensure the SSH config has an entry for the container.
+# Idempotent: removes any existing entry for this container, then adds a fresh one.
+ensure_ssh_config() {
+  local name="$1"
+  local ssh_port="${AGENT_SSH_PORT:-2222}"
+  local key_file
+  key_file="$(ssh_key_path)"
+  local ssh_config="$HOME/.ssh/config"
+
+  ensure_ssh_keys
+  mkdir -p "$HOME/.ssh"
+  touch "$ssh_config"
+
+  # Remove existing entry for this container (using marker comments).
+  local tmp_file
+  tmp_file="$(mktemp)"
+  awk -v name="$name" '
+    $0 ~ ("# agent-sandbox:" name " begin") { skip=1; next }
+    $0 ~ ("# agent-sandbox:" name " end") { skip=0; next }
+    !skip { print }
+  ' "$ssh_config" > "$tmp_file"
+
+  # Append fresh entry.
+  cat >> "$tmp_file" <<SSHCFG
+# agent-sandbox:$name begin
+Host $name
+  HostName localhost
+  Port $ssh_port
+  User root
+  IdentityFile $key_file
+  IdentitiesOnly yes
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+# agent-sandbox:$name end
+SSHCFG
+
+  mv "$tmp_file" "$ssh_config"
+  chmod 600 "$ssh_config"
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+cmd_build() {
+  info "Building image: $AGENT_IMAGE"
+  require_podman
+  podman build -t "$AGENT_IMAGE" "$BUILD_CONTEXT" || die "Image build failed"
+  info "Build complete: $AGENT_IMAGE"
+}
+
+cmd_create() {
+  local project_path
+  project_path="$(resolve_project_path "${1:-}")"
+  local name home_vol
+  name="$(container_name "$project_path")"
+  home_vol="$(home_volume_name "$project_path")"
+
+  require_podman
+  require_machine_running
+
+  # Check for existing container
+  if container_exists "$name"; then
+    die "Container already exists: $name\nUse 'agent-sandbox remove $project_path' first, or a different project path."
+  fi
+
+  # Check that the image exists
+  if ! podman image inspect "$AGENT_IMAGE" >/dev/null 2>&1; then
+    die "Image not found: $AGENT_IMAGE\nBuild it first with: agent-sandbox build"
+  fi
+
+  # Validate workspace mode
+  if [[ "$AGENT_WORKSPACE_MODE" != "bind" ]]; then
+    die "Workspace mode '$AGENT_WORKSPACE_MODE' is not yet implemented. Only 'bind' is supported."
+  fi
+
+  info "Creating sandbox for: $project_path"
+  info "Container: $name"
+  info "Home volume: $home_vol"
+
+  # Create home volume if it doesn't exist
+  if ! volume_exists "$home_vol"; then
+    podman volume create "$home_vol" >/dev/null || die "Failed to create home volume: $home_vol"
+  fi
+
+  # Build flags
+  local create_args=(
+    --name "$name"
+    --hostname "$name"
+    --workdir /workspace
+    --mount "type=bind,source=$project_path,target=/workspace"
+    --mount "type=volume,source=$home_vol,target=/root"
+    --memory "$AGENT_MEMORY"
+    --cpus "$AGENT_CPUS"
+    --pids-limit "$AGENT_PIDS_LIMIT"
+    --network "$AGENT_NETWORK"
+  )
+
+  # Add security flags
+  local -a sec_flags=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && sec_flags+=("$line")
+  done < <(build_security_flags)
+  [[ ${#sec_flags[@]} -gt 0 ]] && create_args+=("${sec_flags[@]}")
+
+  # Add env forwarding
+  local -a env_flags=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && env_flags+=("$line")
+  done < <(build_env_flags)
+  if [[ ${#env_flags[@]} -gt 0 ]]; then
+    create_args+=("${env_flags[@]}")
+  fi
+
+  # SSH setup
+  local ssh_enabled=1
+  if [[ "${AGENT_SSH:-1}" == "0" ]]; then
+    ssh_enabled=0
+  fi
+  if [[ "$AGENT_NETWORK" == "none" && "$ssh_enabled" == "1" ]]; then
+    info "Warning: AGENT_NETWORK=none disables SSH. Disabling SSH for this sandbox."
+    ssh_enabled=0
+  fi
+
+  if [[ "$ssh_enabled" == "1" ]]; then
+    ensure_ssh_keys
+    local pubkey
+    pubkey="$(cat "$(ssh_key_path).pub")"
+    local ssh_port="${AGENT_SSH_PORT:-2222}"
+
+    create_args+=(--publish "$ssh_port:22")
+    create_args+=(--env AGENT_SSH=1)
+    create_args+=(--env "AGENT_SSH_PUBKEY=$pubkey")
+  else
+    create_args+=(--env AGENT_SSH=0)
+  fi
+
+  # Create the container
+  if ! podman create "${create_args[@]}" "$AGENT_IMAGE" >/dev/null 2>&1; then
+    # Cleanup partially created resources on failure
+    info "Create failed, cleaning up..."
+    podman rm "$name" 2>/dev/null || true
+    die "Failed to create container: $name"
+  fi
+
+  info "Created: $name"
+  info "Start with: agent-sandbox start $project_path"
+
+  if [[ "$ssh_enabled" == "1" ]]; then
+    ensure_ssh_config "$name"
+    info "SSH: ssh root@localhost -p ${AGENT_SSH_PORT:-2222}"
+    info "SSH: herdr --remote $name"
+  fi
+}
+
+cmd_start() {
+  local project_path
+  project_path="$(resolve_project_path "${1:-}")"
+  local name
+  name="$(container_name "$project_path")"
+
+  require_podman
+  require_machine_running
+
+  if ! container_exists "$name"; then
+    die "Container does not exist: $name\nCreate it first with: agent-sandbox create $project_path"
+  fi
+
+  if container_running "$name"; then
+    info "Already running: $name"
+    return 0
+  fi
+
+  info "Starting: $name"
+  podman start "$name" >/dev/null || die "Failed to start container: $name"
+
+  # Wait for the entrypoint to finish seeding (marker file appears)
+  local tries=0
+  while [[ $tries -lt 30 ]]; do
+    if podman exec "$name" test -f /root/.agent-sandbox-initialized 2>/dev/null; then
+      break
+    fi
+    tries=$((tries + 1))
+    sleep 0.5
+  done
+
+  if [[ $tries -ge 30 ]]; then
+    info "Warning: container started but initialization marker not found after 15s."
+    info "Check logs with: agent-sandbox logs $project_path"
+  fi
+
+  info "Started: $name"
+}
+
+cmd_stop() {
+  local project_path
+  project_path="$(resolve_project_path "${1:-}")"
+  local name
+  name="$(container_name "$project_path")"
+
+  require_podman
+
+  if ! container_exists "$name"; then
+    info "Container does not exist: $name"
+    return 0
+  fi
+
+  if ! container_running "$name"; then
+    info "Already stopped: $name"
+    return 0
+  fi
+
+  info "Stopping: $name"
+  podman stop "$name" >/dev/null || die "Failed to stop container: $name"
+  info "Stopped: $name"
+}
+
+cmd_remove() {
+  local force=0
+  # Check for --force/-f flag
+  if [[ "${1:-}" == "-f" || "${1:-}" == "--force" ]]; then
+    force=1
+    shift
+  fi
+
+  local project_path
+  project_path="$(resolve_project_path "${1:-}")"
+  local name home_vol
+  name="$(container_name "$project_path")"
+  home_vol="$(home_volume_name "$project_path")"
+
+  require_podman
+
+  if ! container_exists "$name"; then
+    info "Container does not exist: $name"
+  else
+    # Stop if running
+    if container_running "$name"; then
+      info "Stopping: $name"
+      podman stop "$name" >/dev/null 2>&1 || true
+    fi
+    info "Removing container: $name"
+    podman rm "$name" >/dev/null 2>&1 || die "Failed to remove container: $name"
+  fi
+
+  # Ask before removing the home volume (persists tools/config)
+  if volume_exists "$home_vol"; then
+    if [[ "$force" -eq 1 ]]; then
+      podman volume rm "$home_vol" >/dev/null 2>&1 || die "Failed to remove volume: $home_vol"
+      info "Removed volume: $home_vol"
+    else
+      echo "Home volume '$home_vol' still exists (contains persisted tools and config)."
+      printf "Remove it too? [y/N] "
+      local reply
+      read -r reply
+      if [[ "$reply" =~ ^[Yy]$ ]]; then
+        podman volume rm "$home_vol" >/dev/null 2>&1 || die "Failed to remove volume: $home_vol"
+        info "Removed volume: $home_vol"
+      else
+        info "Kept volume: $home_vol"
+      fi
+    fi
+  fi
+
+  info "Removed: $name"
+}
+
+# Shared helper for interactive exec commands (shell, opencode, codex).
+interactive_exec() {
+  local project_path name
+  project_path="$(resolve_project_path "${1:-}")"
+  name="$(container_name "$project_path")"
+
+  require_podman
+  require_machine_running
+  require_container_running "$name" "$project_path"
+
+  shift
+  exec podman exec -it "$name" "$@"
+}
+
+cmd_shell()    { interactive_exec "${1:-}" bash; }
+cmd_opencode() { interactive_exec "${1:-}" mise exec -- opencode; }
+cmd_codex()    { interactive_exec "${1:-}" mise exec -- codex; }
+
+cmd_ssh() {
+  local project_path name
+  project_path="$(resolve_project_path "${1:-}")"
+  name="$(container_name "$project_path")"
+
+  require_podman
+  require_machine_running
+  require_container_running "$name" "$project_path"
+
+  ensure_ssh_config "$name"
+  info "Connecting via SSH to: $name"
+  exec ssh "$name"
+}
+
+cmd_herdr() {
+  local project_path name
+  project_path="$(resolve_project_path "${1:-}")"
+  name="$(container_name "$project_path")"
+
+  require_podman
+  require_machine_running
+  require_container_running "$name" "$project_path"
+
+  command -v herdr >/dev/null 2>&1 || die "herdr is not installed on the host. Install it from https://herdr.dev/"
+
+  ensure_ssh_config "$name"
+  info "Attaching herdr to: $name"
+  exec herdr --remote "$name"
+}
+
+cmd_exec() {
+  local project_path
+  local cmd_start=0
+
+  # Parse: exec [project-path] -- command...
+  # Find the -- separator
+  local args=("$@")
+  local i
+  for i in "${!args[@]}"; do
+    if [[ "${args[$i]}" == "--" ]]; then
+      cmd_start=$((i + 1))
+      break
+    fi
+  done
+
+  if [[ $cmd_start -eq 0 ]]; then
+    die "Usage: agent-sandbox exec [project-path] -- command..."
+  fi
+
+  # Everything before -- is the project path (if any). Max 1 arg before --.
+  local pre_dash_count=$((cmd_start - 1))
+  if [[ $pre_dash_count -gt 1 ]]; then
+    die "Too many arguments before --. Usage: agent-sandbox exec [project-path] -- command..."
+  fi
+
+  if [[ $pre_dash_count -eq 1 ]]; then
+    project_path="$(resolve_project_path "${args[0]}")"
+  else
+    project_path="$(resolve_project_path "")"
+  fi
+
+  local name
+  name="$(container_name "$project_path")"
+
+  require_podman
+  require_machine_running
+  require_container_running "$name" "$project_path"
+
+  # Extract the command after --
+  local cmd_args=("${args[@]:$cmd_start}")
+  if [[ ${#cmd_args[@]} -eq 0 ]]; then
+    die "No command specified after --"
+  fi
+
+  exec podman exec "$name" "${cmd_args[@]}"
+}
+
+cmd_status() {
+  local project_path
+  project_path="$(resolve_project_path "${1:-}")"
+  local name home_vol
+  name="$(container_name "$project_path")"
+  home_vol="$(home_volume_name "$project_path")"
+
+  require_podman
+
+  local status="not created"
+  if container_exists "$name"; then
+    status="$(podman inspect "$name" --format '{{.State.Status}}')"
+  fi
+
+  echo "Sandbox: $name"
+  echo "Project: $project_path"
+  echo "Image: $AGENT_IMAGE"
+  echo "Status: $status"
+  echo "Workspace mode: $AGENT_WORKSPACE_MODE"
+  echo "Network: $AGENT_NETWORK"
+  echo "Memory: $AGENT_MEMORY"
+  echo "CPUs: $AGENT_CPUS"
+  echo "Root home: $home_vol"
+}
+
+cmd_logs() {
+  local project_path
+  project_path="$(resolve_project_path "${1:-}")"
+  local name
+  name="$(container_name "$project_path")"
+
+  require_podman
+
+  if ! container_exists "$name"; then
+    die "Container does not exist: $name"
+  fi
+
+  podman logs "$name"
+}
+
+cmd_rebuild() {
+  local project_path
+  project_path="$(resolve_project_path "${1:-}")"
+  local name
+  name="$(container_name "$project_path")"
+
+  require_podman
+
+  info "Rebuilding image: $AGENT_IMAGE"
+  podman build -t "$AGENT_IMAGE" "$BUILD_CONTEXT" || die "Image build failed"
+  info "Build complete."
+
+  if container_exists "$name"; then
+    info "Removing old container: $name"
+    if container_running "$name"; then
+      podman stop "$name" >/dev/null 2>&1 || true
+    fi
+    podman rm "$name" >/dev/null 2>&1 || true
+    info "Recreate with: agent-sandbox create $project_path"
+    info "Note: existing home volume is preserved. New mise.toml tools"
+    info "require 'mise install' inside the container or volume removal."
+  else
+    info "No existing container. Create with: agent-sandbox create $project_path"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+usage() {
+  cat <<'EOF'
+Usage: agent-sandbox <command> [project-path] [options]
+
+Commands:
+  build                 Build the container image
+  create [path]         Create a sandbox for the project (default: current dir)
+  start [path]          Start the sandbox container
+  stop [path]           Stop the sandbox container
+  remove [-f] [path]     Remove the sandbox container (and optionally its volume)
+  shell [path]          Open an interactive Bash shell in the sandbox
+  opencode [path]       Launch OpenCode in the sandbox
+  codex [path]          Launch Codex in the sandbox
+  ssh [path]            SSH into the sandbox
+  herdr [path]          Attach herdr to the sandbox (thin client)
+  exec [path] -- cmd    Run a command in the sandbox (non-interactive)
+  status [path]         Show sandbox status
+  logs [path]           Show container logs
+  rebuild [path]        Rebuild image and remove old container
+
+Environment variables:
+  AGENT_IMAGE             Image name (default: localhost/agent-dev:latest)
+  AGENT_CPUS              CPU limit (default: 4)
+  AGENT_MEMORY            Memory limit (default: 8g)
+  AGENT_PIDS_LIMIT        PID limit (default: 4096)
+  AGENT_NETWORK           Network mode: default|none (default: default)
+  AGENT_FORWARD_ENV       Comma-separated env vars to forward (default: TERM,COLORTERM,LANG)
+  AGENT_SSH              Enable SSH server (default: 1)
+  AGENT_SSH_PORT         Host SSH port mapped to container port 22 (default: 2222)
+  AGENT_WORKSPACE_MODE    Workspace mode: bind (default; only bind implemented)
+  AGENT_NO_NEW_PRIVILEGES 1|0 (default: 1)
+  AGENT_PROXY_URL         Reserved for future credential proxy (not implemented)
+EOF
+}
+
+main() {
+  local command="${1:-}"
+  shift || true
+
+  case "$command" in
+    build)    cmd_build "$@" ;;
+    create)   cmd_create "$@" ;;
+    start)    cmd_start "$@" ;;
+    stop)     cmd_stop "$@" ;;
+    remove)   cmd_remove "$@" ;;
+    shell)    cmd_shell "$@" ;;
+    opencode) cmd_opencode "$@" ;;
+    codex)    cmd_codex "$@" ;;
+    ssh)      cmd_ssh "$@" ;;
+    herdr)    cmd_herdr "$@" ;;
+    exec)     cmd_exec "$@" ;;
+    status)   cmd_status "$@" ;;
+    logs)     cmd_logs "$@" ;;
+    rebuild)  cmd_rebuild "$@" ;;
+    -h|--help|help) usage ;;
+    "")       usage; exit 1 ;;
+    *)        echo "Unknown command: $command" >&2; usage; exit 1 ;;
+  esac
+}
+
+main "$@"

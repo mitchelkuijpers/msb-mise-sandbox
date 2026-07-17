@@ -1,0 +1,58 @@
+# Compose support for the agent sandbox.
+# The primary interface is the bin/agent-sandbox CLI (native Podman commands).
+# This file is provided as an alternative for users who prefer Compose.
+#
+# SSH is enabled by default (port 2222 -> 22).
+# Set AGENT_SSH=0 to disable. Set AGENT_SSH_PUBKEY to your public key
+# for key-based auth. With the bin/agent-sandbox CLI, the key is
+# managed automatically; with Compose, set it manually:
+#   AGENT_SSH_PUBKEY="$(cat ~/.ssh/agent-sandbox-ed25519.pub)" \
+#   PROJECT_DIR=/path/to/project podman compose up -d
+#
+# Usage:
+#   PROJECT_DIR=/path/to/project podman compose up -d
+#   podman compose exec agent bash
+#   podman compose exec agent mise exec -- opencode
+#   podman compose down
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Containerfile
+    command: sleep infinity
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: ${PROJECT_DIR:-.}
+        target: /workspace
+      - agent-home:/root
+    ports:
+      - "2222:22"
+    environment:
+      TERM: xterm-256color
+      AGENT_SSH: "${AGENT_SSH:-1}"
+      AGENT_SSH_PUBKEY: "${AGENT_SSH_PUBKEY:-}"
+    # Security hardening (matches the bin/agent-sandbox CLI defaults).
+    cap_drop:
+      - SYS_ADMIN
+      - SYS_MODULE
+      - SYS_RAWIO
+      - SYS_BOOT
+      - NET_ADMIN
+      - SYS_TIME
+      - SYSLOG
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 4096
+    # Resource limits. Podman compose support for deploy.resources.limits
+    # varies by version; the bin/agent-sandbox CLI is the authoritative
+    # interface and sets --memory/--cpus via podman create.
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+
+volumes:
+  agent-home:

@@ -21,6 +21,7 @@ opencode = "latest"
 # jq is installed via apt (system-wide, always available) — not duplicated here.
 ripgrep = "latest"
 fd = "latest"
+"npm:@fission-ai/openspec" = "latest"
 
 [settings]
 experimental = true

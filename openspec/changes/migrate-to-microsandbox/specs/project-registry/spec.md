@@ -26,7 +26,7 @@ Each project entry in the registry SHALL conform to a typed schema with the foll
 #### Scenario: Defaults applied for omitted fields
 
 - **WHEN** a project entry omits `resources` or `mounts`
-- **THEN** the CLI applies default values (4 CPUs, 8G memory; workspace mount to `/workspace`, named volume for `/root`)
+- **THEN** the CLI applies default values (4 CPUs, 8G memory; workspace mount to `/workspace`; `/root` remains the default home path but is not blanket-mounted)
 
 ### Requirement: Project add command
 

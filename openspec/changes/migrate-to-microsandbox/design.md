@@ -1,6 +1,6 @@
 ## Context
 
-The agent-sandbox project currently provides a local coding-agent sandbox using rootless Podman on macOS. An agent (OpenCode, Codex) runs as root inside a rootless container, with a hand-rolled socket proxy (`lib/proxy.py`) intercepting sibling-container creation, capability drops, `AGENT_NETWORK=none` for offline mode, and `AGENT_FORWARD_ENV` for env-var forwarding. `docs/architecture.md` explicitly reserves `AGENT_PROXY_URL` for a "future credential-injecting egress proxy" that was never built. The current design has two weak spots: no per-project API restriction, and `AGENT_FORWARD_ENV` puts real secret values into the container environment (documented as "less secure, temporary").
+The agent-sandbox project currently provides a local coding-agent sandbox using rootless Podman on macOS. An agent (OpenCode, Codex, Pi) runs as root inside a rootless container, with a hand-rolled socket proxy (`lib/proxy.py`) intercepting sibling-container creation, capability drops, `AGENT_NETWORK=none` for offline mode, and `AGENT_FORWARD_ENV` for env-var forwarding. `docs/architecture.md` explicitly reserves `AGENT_PROXY_URL` for a "future credential-injecting egress proxy" that was never built. The current design has two weak spots: no per-project API restriction, and `AGENT_FORWARD_ENV` puts real secret values into the container environment (documented as "less secure, temporary").
 
 microsandbox (v0.6.6, Apache 2.0, already installed via mise) provides microVM-based isolation with three native mechanisms that map directly onto the gaps: host-injected Secrets (real values never enter the VM), deny-by-default network policy with per-host allow rules, and TLS-boundary substitution. A de-risking spike on this machine verified all three: a literal placeholder (`$MSB_TEST_TOKEN`) in an outbound header was substituted with the real value at the TLS boundary for an allowed host (`httpbin.org`), blocked for a non-allowed host, and the real value never appeared in the guest environment or filesystem.
 
@@ -37,7 +37,7 @@ The spike also discovered that the microsandbox secret placeholder is NOT an env
 ### D2: TypeScript CLI over bash (and over Rust)
 
 **Choice**: Rewrite `bin/agent-sandbox` as a TypeScript CLI using the microsandbox TS SDK, run via bun/tsx.
-**Why**: The TS SDK provides typed builder APIs for `Secret` and `NetworkPolicy` (compile-time safety vs string flags). TypeScript enables the follow-up GitLab PAT automation (HTTP calls, typed responses, token store, rotation) that would be painful in bash. The project already uses node 22 via mise. bun/tsx runs TS directly with no build step.
+**Why**: The TS SDK provides typed builder APIs for `Secret` and `NetworkPolicy` (compile-time safety vs string flags). TypeScript enables the follow-up GitLab PAT automation (HTTP calls, typed responses, token store, rotation) that would be painful in bash. The project already uses node 24 via mise. bun/tsx runs TS directly with no build step.
 **Alternatives considered**:
 - Bash wrapping the `msb` CLI: fine for lifecycle, but string-based `--secret`/`--net-rule` flags lose type safety, and GitLab PAT automation in bash (curl + jq + state files) would be painful.
 - Python CLI: viable, but the project's agent layer (OpenCode) is TS-centric, and the microsandbox TS SDK is first-class.
@@ -83,11 +83,13 @@ Sandbox.builder("agent")
 - `.injectHeaders(true)` / `.injectBasicAuth(true)`: tested in spike round 4 — do NOT auto-add auth headers. They control where substitution happens, not whether it's enabled. Not needed since the env-var bridge works.
 - Write a wrapper that reads the placeholder from a file and exports the real value: defeats the security model.
 
-### D4: In-VM OAuth for Codex/ChatGPT subscription
+### D4: No blanket `/root` persistence in v1
 
-**Choice**: Run `codex auth` interactively inside the VM; token persists in the `/root` named volume.
-**Why**: microsandbox Secrets are for static values, not OAuth tokens that rotate. In-VM auth matches the current Podman behavior (no regression) and is pragmatic for v1. Network policy still constrains where the token can be sent.
+**Choice**: Do not mount a blanket named volume at `/root` in v1. Keep only the workspace bind mount by default and defer any targeted home-directory persistence to a follow-up.
+**Why**: Mounting `/root` masks image content, including the baked-in mise toolchain state under `/root/.config` and `/root/.local/share`. Avoiding the blanket mount keeps first-boot tools working reliably and matches the current implementation.
 **Alternatives considered**:
+- Blanket `/root` named volume: simpler persistence story, but it masks image-built content and broke the toolchain during validation.
+- Targeted subpath persistence (for example a future `/root/.codex` mount): promising hardening/follow-up option once the exact persistence needs are known.
 - Host-side OAuth + inject access token as Secret + host-side refresh: more secure (token never in VM) but requires refresh orchestration. Deferred to a hardening follow-up.
 
 ### D5: Project registry as JSON config
@@ -113,19 +115,19 @@ Sandbox.builder("agent")
 ## Risks / Trade-offs
 
 - **[microsandbox beta maturity (v0.6.6)]** → Pin version in `package.json`. Expect API drift across releases. Test before upgrading. The network policy grammar changed in v0.4.0 and v0.5.3.
-- **[Secret placeholder is not an env var]** → Validate `.injectHeaders()` / `.injectBasicAuth()` during implementation. If auto-inject works, agents don't need the token. If not, configure tools to use the literal placeholder string. This is the biggest integration unknown.
-- **[Codex OAuth endpoints unconfirmed]** → `auth.openai.com` + `chatgpt.com` are best guesses. During implementation, run the OAuth flow once with broad network, observe which hosts it hits, then lock down the network policy.
+- **[Secret placeholder is not an env var]** → The core placeholder mechanism is verified and the implementation uses the literal-placeholder env-bridge pattern. Full authenticated API validation with every agent client is explicitly out of scope for this change and can be confirmed during normal use if needed.
+- **[Codex OAuth endpoints unconfirmed]** → Out of scope for this change. `codex` remains available as an interactive command, but users may need to add manual `network.allow` rules if they choose to use Codex.
 - **[Image pull is slow on flaky network]** → Pre-cache images via `msb pull` or build locally and `msb image load`. The spike observed a 5-minute pull for `python:3.12-slim`.
 - **[Secret modification at runtime not in TS SDK]** → Create-time only in TS SDK. For rotation, recreate the sandbox. CLI `msb modify --secret` works but the TS CLI uses the SDK.
 - **[Project-scoping is GitLab's job]** → microsandbox ensures the token can't leave to other hosts. GitLab ensures the token can't access other projects. v1 uses a manually-provided token; v2 will automate Project Access Token creation with minimal scope.
-- **[OAuth token in VM filesystem]** → Codex token lives in `/root` named volume. Network policy limits where it can be sent, but it's not protected by the Secret placeholder mechanism. Same exposure as current Podman setup (not a regression). Hardenable later.
+- **[Home-directory persistence deferred]** → There is no blanket host-mounted `/root` in v1. State inside the sandbox survives stop/start for the same sandbox instance, but remove/recreate does not preserve a dedicated home volume. Targeted subpath persistence can be added later if needed.
 - **[msb inspect hides secrets]** → Confirmed in spike: secrets don't appear in `msb inspect` output. This is a security feature, not a bug, but it makes debugging harder. Use `--on-secret-violation block-and-log` to get violation logs.
 
 ## Migration Plan
 
 1. **Spike** (done): Verified microsandbox core mechanisms on this machine.
 2. **v1 core**: Build the TS CLI scaffold (`src/cli.ts`, `src/lib/sandbox.ts`, `src/lib/config.ts`). Implement `create`/`start`/`stop`/`shell`/`list`/`doctor` using the MSB SDK. Get one project working end-to-end with a manually-provided GitLab token.
-3. **v1 agents**: Implement `opencode` and `codex` commands. Validate the placeholder integration pattern (`.injectHeaders()` vs literal string). Confirm Codex OAuth endpoints and lock down network policy.
+3. **v1 agents**: Implement `opencode`, `codex`, and `pi` commands. Use the verified literal-placeholder env-bridge pattern. Leave Codex OAuth endpoint discovery out of scope; users can add manual network rules if they choose to use Codex or Pi.
 4. **v1 polish**: Implement `project add`/`project list`/`project remove`. Rewrite `tests/smoke-test.sh` for the TS CLI. Update `docs/` and `README.md`. Remove `lib/proxy.py`, `config/sshd_config`, `config/entrypoint.sh`, and obsolete env vars.
 5. **Archive `add-compose-support`**: The socket proxy and Compose-sandbox specs are superseded by microsandbox's native network policy + secrets.
 
@@ -134,4 +136,4 @@ Sandbox.builder("agent")
 ## Open Questions
 
 - **Q1 (RESOLVED by spike round 7)**: How do agent tools that expect env-var-based API keys bridge to microsandbox's literal-placeholder secret mechanism? **Answer**: Set the env var to the placeholder string (`.env("GITLAB_TOKEN", "$MSB_GITLAB_TOKEN_REAL")`) and register the secret on the NetworkBuilder. Tools read the env var as normal; the TLS proxy substitutes the placeholder at the boundary. See decision D3 for the verified pattern. The critical v0.6.6 detail: secrets MUST be on the NetworkBuilder, not the SandboxBuilder (which is broken in this version).
-- **Q2 (DEFERRED)**: Codex/ChatGPT OAuth endpoints. Deferred for now — Codex OAuth flow will be validated during implementation with broad network, then locked down. Not a blocker for the core migration.
+- **Q2 (DEFERRED)**: Codex/ChatGPT OAuth endpoints. Deferred beyond this change. The `codex` command remains available, but locked-down OAuth endpoint discovery is not a blocker for the core migration.

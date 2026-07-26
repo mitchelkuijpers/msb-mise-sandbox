@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# Smoke tests for the Podman agent sandbox.
+# Smoke tests for the microsandbox/Bun agent-sandbox CLI.
 #
-# Tests the full lifecycle: build, create, start, verify, stop, restart,
-# remove, recreate, and cleanup. The cleanup handler runs even on failure.
+# Tests the full lifecycle: build image, project add/list/remove, create
+# sandbox, exec commands, stop/start/restart, and non-interactive agent
+# command checks.
 #
 # Usage:
 #   ./tests/smoke-test.sh
 #
 # Environment variables:
-#   AGENT_IMAGE  Image to test (default: localhost/agent-dev:latest)
-#   SKIP_BUILD   Set to 1 to skip the image build step
+#   AGENT_IMAGE       Image tag to test (default: agent-sandbox:latest)
+#   SKIP_BUILD        Set to 1 to skip the image build step
+#   SKIP_DOCKER_PULL  Set to 1 to skip the docker pull/run hello-world step
+#
 # Note: We use set -uo pipefail (NOT set -e) because a test script must
 # continue past individual command failures and report them.
 set -uo pipefail
@@ -20,15 +23,19 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 CLI="$PROJECT_ROOT/bin/agent-sandbox"
-AGENT_IMAGE="${AGENT_IMAGE:-localhost/agent-dev:latest}"
+FALLBACK_CLI="bun run $PROJECT_ROOT/src/cli.ts"
+AGENT_IMAGE="${AGENT_IMAGE:-agent-sandbox:latest}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 
+# Fall back to bun if the launcher script doesn't exist
+if [[ ! -x "$CLI" ]]; then
+  CLI="$FALLBACK_CLI"
+fi
+
 # Test state
-TEST_DIR=""
+TEST_TEMP_DIR=""
 TEST_PASS=0
 TEST_FAIL=0
-CONTAINER_NAME=""
-HOME_VOLUME=""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -87,16 +94,6 @@ assert_contains() {
   fi
 }
 
-# Get the container name for the test project.
-get_container_name() {
-  "$CLI" status "$TEST_DIR" 2>/dev/null | grep '^Sandbox:' | awk '{print $2}'
-}
-
-# Get the home volume name for the test project.
-get_home_volume() {
-  "$CLI" status "$TEST_DIR" 2>/dev/null | grep '^Root home:' | awk '{print $3}'
-}
-
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
@@ -109,14 +106,24 @@ CLEANUP_AND_EXIT() {
   echo ""
   info "Cleaning up..."
 
-  # Stop and remove the test container if it exists
-  if [[ -n "$TEST_DIR" ]]; then
-    "$CLI" remove -f "$TEST_DIR" 2>/dev/null || true
+  # Remove the test sandbox if it exists
+  if [[ -n "$TEST_TEMP_DIR" ]]; then
+    AGENT_SANDBOX_HOME="$TEST_TEMP_DIR/registry" "$CLI" remove smoke-test 2>/dev/null || true
   fi
 
-  # Remove the test directory
-  if [[ -n "$TEST_DIR" && -d "$TEST_DIR" ]]; then
-    rm -rf "$TEST_DIR" 2>/dev/null || true
+  # Remove the Docker data volume (persists across sandbox removal by design)
+  if [[ -n "$TEST_TEMP_DIR" ]]; then
+    msb volume rm smoke-test-docker-data 2>/dev/null || true
+  fi
+
+  # Remove the test project from the registry
+  if [[ -n "$TEST_TEMP_DIR" ]]; then
+    AGENT_SANDBOX_HOME="$TEST_TEMP_DIR/registry" "$CLI" project remove smoke-test 2>/dev/null || true
+  fi
+
+  # Remove the temp directory
+  if [[ -n "$TEST_TEMP_DIR" && -d "$TEST_TEMP_DIR" ]]; then
+    rm -rf "$TEST_TEMP_DIR" 2>/dev/null || true
   fi
 
   # Report results
@@ -135,161 +142,231 @@ trap 'CLEANUP_AND_EXIT 0' EXIT
 # Tests
 # ---------------------------------------------------------------------------
 
-info "Starting Podman agent sandbox smoke tests"
+info "Starting agent-sandbox CLI smoke tests"
 info "CLI: $CLI"
 info "Image: $AGENT_IMAGE"
+echo ""
 
-# Verify prerequisites
-assert_ok "Podman is installed" command -v podman
-if [[ "$(uname)" == "Darwin" ]]; then
-  if podman machine list --format '{{.Running}}' 2>/dev/null | grep -q true; then
-    pass "Podman machine is running"
-  else
-    fail "Podman machine is not running"
-  fi
+# ---------------------------------------------------------------------------
+# Step 1: Verify prerequisites
+# ---------------------------------------------------------------------------
+info "Step 1: Verifying prerequisites..."
+assert_ok "microsandbox CLI (msb) is installed" command -v msb
+assert_ok "docker is installed" command -v docker
+assert_ok "bun is installed" command -v bun
+assert_ok "jq is installed" command -v jq
+assert_ok "CLI is accessible" test -x "$PROJECT_ROOT/bin/agent-sandbox" -o -f "$PROJECT_ROOT/src/cli.ts"
+
+# Quick sanity: CLI --help works
+assert_contains "CLI --help lists commands" "Commands:" "$CLI" --help
+assert_contains "CLI --help shows build" "build" "$CLI" --help
+assert_contains "CLI --help shows doctor" "doctor" "$CLI" --help
+assert_contains "CLI --help shows project" "project" "$CLI" --help
+
+# Check microsandbox daemon health
+# Run msb doctor directly (faster than via the CLI) — just the exit code matters
+if msb doctor >/dev/null 2>&1; then
+  pass "msb doctor passes"
+else
+  fail "msb doctor failed — is the microsandbox daemon running?"
 fi
 
-# Step 1: Build the image (or skip)
+# ---------------------------------------------------------------------------
+# Step 2: Build the image (or skip)
+# ---------------------------------------------------------------------------
 if [[ "$SKIP_BUILD" == "1" ]]; then
-  info "Skipping build (SKIP_BUILD=1)"
+  info "Skipping image build (SKIP_BUILD=1)"
+  # Verify image is already loaded — fail early so the user knows to build.
+  if msb image list --format json 2>/dev/null | grep -q "$AGENT_IMAGE"; then
+    pass "Image ${AGENT_IMAGE} is cached"
+  else
+    fail "Image ${AGENT_IMAGE} not found — run without SKIP_BUILD=1 or build manually"
+  fi
 else
-  info "Step 1: Building image..."
-  assert_ok "Image build succeeds" "$CLI" build
+  info "Step 2: Building image and loading into microsandbox..."
+  assert_ok "Image build and load succeeds" "$CLI" build
 fi
 
-# Step 2: Create a temporary project directory
-info "Step 2: Creating temporary project directory..."
-TEST_DIR="$(mktemp -d /tmp/agent-smoke-XXXXXX)"
-info "Test project: $TEST_DIR"
+# ---------------------------------------------------------------------------
+# Step 3: Set up isolated test environment
+# ---------------------------------------------------------------------------
+info "Step 3: Creating isolated test environment..."
+TEST_TEMP_DIR="$(mktemp -d /tmp/agent-sandbox-smoke-XXXXXX)"
+mkdir -p "$TEST_TEMP_DIR/registry"
+export AGENT_SANDBOX_HOME="$TEST_TEMP_DIR/registry"
+export GITLAB_TOKEN="smoke-test-token"
+info "Test registry dir: $AGENT_SANDBOX_HOME"
 
-# Create a test file in the project
-echo "test content" > "$TEST_DIR/test-file.txt"
-echo "agent sandbox smoke test" > "$TEST_DIR/README.md"
-git -C "$TEST_DIR" init -q 2>/dev/null || true
-git -C "$TEST_DIR" add -A 2>/dev/null || true
-git -C "$TEST_DIR" commit -q -m "initial" 2>/dev/null || true
+# ---------------------------------------------------------------------------
+# Step 4: Add test project to registry (non-interactive via piped input)
+# ---------------------------------------------------------------------------
+info "Step 4: Adding test project to the registry..."
 
-# Step 3: Create and start a sandbox
-info "Step 3: Creating sandbox..."
-assert_ok "Create sandbox" "$CLI" create "$TEST_DIR"
+# project add is interactive; we pipe answers for the smoke test.
+# Answers: GitLab URL (default) / Token env var (default) / no additional secrets
+# / Enable Docker support? yes
+assert_ok "Project add (non-interactive)" \
+  bash -c 'printf "https://gitlab.com\nGITLAB_TOKEN\nn\ny\n" | '"$CLI"' project add smoke-test'
 
-info "Step 4: Starting sandbox..."
-assert_ok "Start sandbox" "$CLI" start "$TEST_DIR"
+# ---------------------------------------------------------------------------
+# Step 5: Verify project list
+# ---------------------------------------------------------------------------
+info "Step 5: Verifying project registry..."
+assert_contains "Project list shows 'smoke-test'" "smoke-test" "$CLI" project list
+assert_contains "Project list shows GitLab URL" "gitlab.com" "$CLI" project list
+assert_contains "Project list shows secret ref" "GITLAB_TOKEN" "$CLI" project list
 
-CONTAINER_NAME="$(get_container_name)"
-HOME_VOLUME="$(get_home_volume)"
-info "Container: $CONTAINER_NAME"
-info "Home volume: $HOME_VOLUME"
-
-# Step 5: Verify the running user is root
-info "Step 5: Verifying user is root..."
-assert_contains "User is root (UID 0)" "uid=0(root)" "$CLI" exec "$TEST_DIR" -- id
-
-# Step 6: Verify /workspace is writable
-info "Step 6: Verifying /workspace is writable..."
-assert_ok "Touch file in /workspace" "$CLI" exec "$TEST_DIR" -- touch /workspace/smoke-test-file
-assert_ok "File exists in /workspace" "$CLI" exec "$TEST_DIR" -- test -f /workspace/smoke-test-file
-assert_ok "Bind mount shows host file" "$CLI" exec "$TEST_DIR" -- test -f /workspace/test-file.txt
-
-# Step 7: Verify /root persists (marker file from entrypoint)
-info "Step 7: Verifying /root initialization..."
-assert_ok "Marker file exists" "$CLI" exec "$TEST_DIR" -- test -f /root/.agent-sandbox-initialized
-assert_ok "Bashrc exists" "$CLI" exec "$TEST_DIR" -- test -f /root/.bashrc
-assert_ok "Mise config exists" "$CLI" exec "$TEST_DIR" -- test -f /root/.config/mise/config.toml
-
-# Step 8: Install a small package with apt
-info "Step 8: Installing apt package..."
-assert_ok "apt-get update" "$CLI" exec "$TEST_DIR" -- apt-get update -qq
-assert_ok "apt-get install tree" "$CLI" exec "$TEST_DIR" -- apt-get install -y -qq tree
-assert_contains "tree is installed" "tree v" "$CLI" exec "$TEST_DIR" -- tree --version
-
-# Step 9: Install or invoke a tool with mise
-info "Step 9: Verifying mise tools..."
-assert_contains "mise --version works" "linux" "$CLI" exec "$TEST_DIR" -- mise --version
-assert_contains "node --version works" "v22" "$CLI" exec "$TEST_DIR" -- mise exec -- node --version
-assert_contains "python --version works" "Python 3" "$CLI" exec "$TEST_DIR" -- mise exec -- python --version
-assert_contains "opencode --version works" "1" "$CLI" exec "$TEST_DIR" -- mise exec -- opencode --version
-assert_contains "codex --version works" "codex" "$CLI" exec "$TEST_DIR" -- mise exec -- codex --version
-assert_contains "ripgrep works" "ripgrep" "$CLI" exec "$TEST_DIR" -- mise exec -- rg --version
-assert_contains "fd works" "fd" "$CLI" exec "$TEST_DIR" -- mise exec -- fd --version
-assert_contains "jq works" "jq" "$CLI" exec "$TEST_DIR" -- jq --version
-
-# Step 10: Verify network access in default mode
-info "Step 10: Verifying network access..."
-assert_ok "DNS resolution works" "$CLI" exec "$TEST_DIR" -- getent hosts github.com
-assert_ok "HTTP download works" "$CLI" exec "$TEST_DIR" -- curl -fsSL -o /dev/null https://mise.run
-
-# Step 11: Verify resource limits are visible
-info "Step 11: Verifying resource limits..."
-MEMORY_LIMIT="$(podman container inspect "$CONTAINER_NAME" --format '{{.HostConfig.Memory}}' 2>/dev/null || echo "0")"
-PID_LIMIT="$(podman container inspect "$CONTAINER_NAME" --format '{{.HostConfig.PidsLimit}}' 2>/dev/null || echo "0")"
-if [[ "$MEMORY_LIMIT" != "0" && "$MEMORY_LIMIT" != "" ]]; then
-  pass "Memory limit is set ($MEMORY_LIMIT)"
+# ---------------------------------------------------------------------------
+# Step 5b: Inject Docker Hub allow rules (the project was added with Docker
+#          enabled; it needs egress to the registry to pull images through
+#          the deny-by-default policy).
+# ---------------------------------------------------------------------------
+info "Step 5b: Injecting Docker Hub network.allow rules..."
+HUB_RULES='["auth.docker.io:tcp:443","registry-1.docker.io:tcp:443","production.cloudfront.docker.com:tcp:443","production.cloudflare.docker.com:tcp:443"]'
+if jq --argjson rules "$HUB_RULES" \
+     '(.projects["smoke-test"].network // {}) as $net | .projects["smoke-test"].network = ($net | .allow = (($net.allow // []) + $rules))' \
+     "$AGENT_SANDBOX_HOME/projects.json" > "$AGENT_SANDBOX_HOME/projects.json.tmp" \
+     && mv "$AGENT_SANDBOX_HOME/projects.json.tmp" "$AGENT_SANDBOX_HOME/projects.json"; then
+  pass "Docker Hub allow rules injected"
 else
-  fail "Memory limit is not set"
-fi
-if [[ "$PID_LIMIT" != "0" && "$PID_LIMIT" != "" ]]; then
-  pass "PID limit is set ($PID_LIMIT)"
-else
-  fail "PID limit is not set"
+  fail "Failed to inject Docker Hub allow rules"
 fi
 
-# Step 12: SSH server tests
-info "Step 12: Verifying SSH server..."
-assert_ok "sshd is running" podman exec "$CONTAINER_NAME" pgrep -x sshd
-assert_ok "sshd listening on port 22" podman exec "$CONTAINER_NAME" bash -c 'ss -tlnp | grep -q ":22 "'
-assert_ok "ssh host keys generated" podman exec "$CONTAINER_NAME" test -f /etc/ssh/ssh_host_ed25519_key
-assert_ok "authorized_keys exists" podman exec "$CONTAINER_NAME" test -f /root/.ssh/authorized_keys
-assert_ok "bash_profile sources bashrc" podman exec "$CONTAINER_NAME" test -f /root/.bash_profile
+# ---------------------------------------------------------------------------
+# Step 6: Create and start a sandbox
+# ---------------------------------------------------------------------------
+info "Step 6: Creating sandbox..."
+assert_ok "Create sandbox" "$CLI" create smoke-test
 
-# Step 13: Stop and restart the container
-info "Step 13: Stopping and restarting..."
-assert_ok "Stop container" "$CLI" stop "$TEST_DIR"
-assert_ok "Container is stopped" test "$(podman container inspect "$CONTAINER_NAME" --format '{{.State.Status}}' 2>/dev/null)" = "exited"
-assert_ok "Start container again" "$CLI" start "$TEST_DIR"
-assert_ok "Container is running" test "$(podman container inspect "$CONTAINER_NAME" --format '{{.State.Status}}' 2>/dev/null)" = "running"
+# ---------------------------------------------------------------------------
+# Step 7: List sandboxes
+# ---------------------------------------------------------------------------
+info "Step 7: Listing sandboxes..."
+assert_contains "Sandbox list shows 'smoke-test'" "smoke-test" "$CLI" list
+assert_contains "Sandbox list shows status" "Running" "$CLI" list
 
-# Step 14: Verify installed apt packages remain after restart
-info "Step 14: Verifying apt persistence after restart..."
-assert_contains "tree still installed after restart" "tree v" "$CLI" exec "$TEST_DIR" -- tree --version
+# ---------------------------------------------------------------------------
+# Step 8: Verify the sandbox user
+# ---------------------------------------------------------------------------
+info "Step 8: Verifying user identity..."
+assert_contains "User is root (UID 0)" "uid=0(root)" "$CLI" exec smoke-test id
 
-# Step 14: Verify /root data remains after restart
-info "Step 14: Verifying /root persistence after restart..."
-assert_ok "Marker still exists" "$CLI" exec "$TEST_DIR" -- test -f /root/.agent-sandbox-initialized
-assert_contains "mise tools still work after restart" "v22" "$CLI" exec "$TEST_DIR" -- mise exec -- node --version
+# ---------------------------------------------------------------------------
+# Step 9: Verify /workspace is writable
+# ---------------------------------------------------------------------------
+info "Step 9: Verifying /workspace..."
+assert_ok "Touch file in /workspace" "$CLI" exec smoke-test touch /workspace/smoke-test-file
+assert_ok "File exists in /workspace" "$CLI" exec smoke-test -- test -f /workspace/smoke-test-file
 
-# Step 14: Remove and recreate the container
-info "Step 14: Removing and recreating..."
-assert_ok "Remove container (keep volume)" "$CLI" remove "$TEST_DIR" <<< "n"
-assert_contains "Container is gone" "not created" "$CLI" status "$TEST_DIR"
-assert_ok "Recreate container" "$CLI" create "$TEST_DIR"
-assert_ok "Start recreated container" "$CLI" start "$TEST_DIR"
+# ---------------------------------------------------------------------------
+# Step 10: Verify development tools installed in the image
+# ---------------------------------------------------------------------------
+info "Step 10: Verifying development tools..."
+assert_contains "node --version works" "v24" "$CLI" exec smoke-test -- node --version
+assert_contains "python --version works" "Python 3" "$CLI" exec smoke-test -- python --version
+assert_contains "jq works" "jq-" "$CLI" exec smoke-test -- jq --version
+assert_contains "ripgrep works" "ripgrep" "$CLI" exec smoke-test -- rg --version
+assert_contains "fd works" "fd" "$CLI" exec smoke-test -- fd --version
 
-# Step 15: Verify /root data remains through the named volume
-info "Step 15: Verifying /root persistence through volume..."
-assert_ok "Marker still exists after recreate" "$CLI" exec "$TEST_DIR" -- test -f /root/.agent-sandbox-initialized
-assert_contains "mise tools still work after recreate" "v22" "$CLI" exec "$TEST_DIR" -- mise exec -- node --version
+# mise managed tools
+assert_ok "mise is available" "$CLI" exec smoke-test -- mise --version
 
-# Step 16: Verify container-layer apt packages do NOT remain after recreation
-info "Step 16: Verifying container-layer apt packages are gone..."
-assert_fails "tree is gone after recreate" "$CLI" exec "$TEST_DIR" -- tree --version
+# ---------------------------------------------------------------------------
+# Step 10b: Docker-in-sandbox (the project was created with Docker enabled,
+#           so a disk-backed /var/lib/docker volume is mounted).
+# ---------------------------------------------------------------------------
+info "Step 10b: Verifying Docker-in-sandbox..."
+assert_ok "docker-up starts the daemon" "$CLI" exec smoke-test -- docker-up
+assert_contains "docker info works" "Server Version" "$CLI" exec smoke-test -- docker info
+assert_ok "docker-up is idempotent (no-op when running)" "$CLI" exec smoke-test -- docker-up
+if [[ "${SKIP_DOCKER_PULL:-0}" == "1" ]]; then
+  info "Skipping docker pull/run (SKIP_DOCKER_PULL=1)"
+else
+  assert_ok "docker pull hello-world" "$CLI" exec smoke-test -- docker pull hello-world
+  assert_contains "docker run --rm hello-world" "Hello from Docker" "$CLI" exec smoke-test -- docker run --rm hello-world
+fi
 
-# Step 17: Verify workspace files persist (bind mount)
-info "Step 17: Verifying workspace bind mount..."
-assert_ok "Host test file still in workspace" "$CLI" exec "$TEST_DIR" -- test -f /workspace/test-file.txt
+# ---------------------------------------------------------------------------
+# Step 11: Non-interactive agent command checks
+# ---------------------------------------------------------------------------
+info "Step 11: Checking agent CLIs (non-interative)..."
+assert_ok "opencode --version succeeds" "$CLI" exec smoke-test -- opencode --version
+assert_ok "codex --version succeeds" "$CLI" exec smoke-test -- codex --version
+assert_ok "pi --version succeeds" "$CLI" exec smoke-test -- pi --version
 
-# Step 18: Verify status output
-info "Step 18: Verifying status output..."
-STATUS_OUTPUT="$("$CLI" status "$TEST_DIR" 2>&1)"
-echo "$STATUS_OUTPUT" | grep -q "Sandbox:" || fail "Status missing Sandbox field"
-echo "$STATUS_OUTPUT" | grep -q "Project:" || fail "Status missing Project field"
-echo "$STATUS_OUTPUT" | grep -q "Image:" || fail "Status missing Image field"
-echo "$STATUS_OUTPUT" | grep -q "Status: running" || fail "Status not running"
-echo "$STATUS_OUTPUT" | grep -q "Network:" || fail "Status missing Network field"
-pass "Status output is correct"
+# ---------------------------------------------------------------------------
+# Step 12: Verify network access (default policy allows DNS + no explicit
+#          allow rules, so curl to public HTTPS should be blocked).
+#          We test that DNS works (allowed via Rule.allowDns()) and that
+#          outbound HTTPS is blocked by default (deny-by-default).
+# ---------------------------------------------------------------------------
+info "Step 12: Verifying network policy..."
+# DNS resolution is always allowed by the deny-by-default policy
+assert_ok "DNS resolution works" "$CLI" exec smoke-test getent hosts github.com
 
-# Step 19: Clean up all test containers and volumes
-info "Step 19: Final cleanup..."
-assert_ok "Remove with force" "$CLI" remove -f "$TEST_DIR"
+# HTTPS egress is denied by default (no allow rule for github.com)
+# We check that curl fails rather than succeeds
+assert_fails "HTTPS egress is denied by default" \
+  "$CLI" exec smoke-test -- curl -fsSL -o /dev/null --connect-timeout 10 https://github.com
 
-info "All tests complete."
+# ---------------------------------------------------------------------------
+# Step 13: Stop sandbox
+# ---------------------------------------------------------------------------
+info "Step 13: Stopping sandbox..."
+assert_ok "Stop sandbox" "$CLI" stop smoke-test
+assert_contains "Sandbox status shows stopped" "Stopped" "$CLI" list
+
+# ---------------------------------------------------------------------------
+# Step 14: Start sandbox again
+# ---------------------------------------------------------------------------
+info "Step 14: Starting sandbox again..."
+assert_ok "Start sandbox" "$CLI" start smoke-test
+assert_contains "Sandbox status shows running" "Running" "$CLI" list
+
+# ---------------------------------------------------------------------------
+# Step 15: Verify tools still work after restart
+# ---------------------------------------------------------------------------
+info "Step 15: Verifying tool availability after restart..."
+assert_contains "node still works after restart" "v24" "$CLI" exec smoke-test -- node --version
+assert_ok "opencode still works after restart" "$CLI" exec smoke-test -- opencode --version
+
+# ---------------------------------------------------------------------------
+# Step 16: Restart the sandbox (restart command)
+# ---------------------------------------------------------------------------
+info "Step 16: Testing restart command..."
+assert_ok "Restart sandbox" "$CLI" restart smoke-test
+assert_contains "Sandbox running after restart" "Running" "$CLI" list
+assert_contains "Tools still work after restart" "v24" "$CLI" exec smoke-test -- node --version
+
+# ---------------------------------------------------------------------------
+# Step 17: Run doctor (quick health check, non-fatal)
+# ---------------------------------------------------------------------------
+info "Step 17: Running doctor..."
+assert_ok "doctor command passes" "$CLI" doctor
+
+# ---------------------------------------------------------------------------
+# Step 18: Remove sandbox and verify removal
+# ---------------------------------------------------------------------------
+info "Step 18: Removing sandbox..."
+assert_ok "Remove sandbox" "$CLI" remove smoke-test
+# The sandbox list is global (not isolated to the test registry), so other
+# sandboxes may still be present. Assert smoke-test is gone rather than that
+# the whole list is empty.
+if "$CLI" list 2>/dev/null | grep -q "smoke-test"; then
+  fail "Removed sandbox still appears in list"
+else
+  pass "Removed sandbox absent from list"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 19: Remove project from registry
+# ---------------------------------------------------------------------------
+info "Step 19: Removing project from registry..."
+assert_ok "Remove project from registry" "$CLI" project remove smoke-test
+assert_contains "Project list is empty after removal" "No projects" "$CLI" project list
+
+# ---------------------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------------------
+info "All smoke tests complete."
+CLEANUP_AND_EXIT 0

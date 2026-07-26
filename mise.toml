@@ -1,14 +1,15 @@
-# Global agent tool configuration for the Podman agent sandbox.
-# This file is copied into the image and seeded to /root/.config/mise/config.toml
-# by the entrypoint on first container start.
+# Global agent tool configuration for the agent-sandbox.
+# This file configures both the host development environment and is
+# copied into the OCI image for sandbox use.
 #
 # Language runtimes are pinned to major versions for reproducibility.
 # Bump intentionally and document the reason.
 
 [tools]
 # Language runtimes (core backends, pinned major versions)
-node = "22"
+node = "24"
 python = "3.12"
+bun = "latest"
 
 # Agent CLIs
 # opencode uses the mise registry shorthand (aqua backend) — pre-built binary,
@@ -16,6 +17,8 @@ python = "3.12"
 opencode = "latest"
 # codex uses the npm backend (no aqua registry entry confirmed).
 "npm:@openai/codex" = "latest"
+# pi uses the npm backend.
+"npm:@earendil-works/pi-coding-agent" = "latest"
 
 # CLI utilities (aqua backend via registry shorthand)
 # jq is installed via apt (system-wide, always available) — not duplicated here.
@@ -36,12 +39,13 @@ run = "opencode"
 description = "Launch Codex"
 run = "codex"
 
+[tasks.pi]
+description = "Launch Pi"
+run = "pi"
+
 [tasks.shell]
 description = "Open an interactive Bash shell"
 run = "bash"
 
-# Host-side task: install a wrapper script to ~/.local/bin so agent-sandbox
-# is callable from anywhere. Not used inside the container.
-[tasks.install]
-description = "Install agent-sandbox wrapper to ~/.local/bin"
-run = "bash scripts/install.sh"
+# The `scripts/install.sh` wrapper installer has been removed.
+# Use `bin/agent-sandbox` directly or symlink it into your PATH.

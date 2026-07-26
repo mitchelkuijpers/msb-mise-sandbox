@@ -56,16 +56,16 @@ The CLI SHALL enable TLS interception (the microsandbox built-in TLS proxy) for 
 - **WHEN** a sandbox is created with no secrets
 - **THEN** TLS interception is not required and traffic to allowed hosts proceeds without inspection
 
-### Requirement: Codex OAuth network access
+### Requirement: Manual Codex network configuration
 
-The CLI SHALL include network allow rules for the Codex/ChatGPT OAuth flow endpoints in projects that use the `codex` command. The exact endpoints SHALL be confirmed during implementation by observing the OAuth flow; initial candidates are `auth.openai.com:443` and `chatgpt.com:443`.
+The CLI SHALL allow projects to configure any extra Codex-related network hosts through the normal `network.allow` registry field. This change does NOT require automatic Codex OAuth endpoint discovery or a built-in locked-down OAuth allowlist.
 
-#### Scenario: Codex OAuth flow completes
+#### Scenario: User adds Codex hosts manually
 
-- **WHEN** a project config enables codex and includes OAuth endpoint allow rules and the user runs `agent-sandbox codex <project>` then completes the OAuth flow
-- **THEN** the OAuth endpoints are reachable, the flow completes, and the token persists in the `/root` named volume
+- **WHEN** a project config includes Codex-related hosts such as `auth.openai.com:tcp:443` in `network.allow`
+- **THEN** the CLI applies those rules like any other explicit egress allow rule
 
-#### Scenario: Non-OAuth hosts blocked during codex use
+#### Scenario: Codex without explicit allow rules
 
-- **WHEN** a project config enables codex with only OAuth + API endpoints allowed and the agent attempts to reach an unrelated host
-- **THEN** the connection is blocked by the network policy
+- **WHEN** a project uses the `codex` command without the required Codex hosts in `network.allow`
+- **THEN** Codex network access remains constrained by the deny-by-default policy and the user must add the necessary hosts manually

@@ -10,9 +10,9 @@ The current Podman-based sandbox relies on a hand-rolled socket proxy (`lib/prox
 - **BREAKING**: Remove SSH server (`config/sshd_config`, key pair) — replaced by `msb exec` / `msb shell` host-guest command channel.
 - Add a project registry (`~/.agent-sandbox/projects.json`) for per-project configuration: GitLab URL, secrets, network allow-rules, resource limits, mounts.
 - Add host-injected secrets: GitLab token and OpenAI API key are passed as placeholders (`$MSB_<NAME>`), substituted with real values only at the TLS boundary for allowed hosts. Real values never enter the VM.
-- Add deny-by-default network egress with per-project allow rules (e.g., `gitlab.com:443`, `api.openai.com:443`, `auth.openai.com:443`).
+- Add deny-by-default network egress with per-project allow rules (e.g., `gitlab.com:443`, `api.openai.com:443`).
 - Keep: `Containerfile` (as OCI image base, minor edits), `mise.toml` (tool versions), OpenSpec planning system, `.opencode`/`.codex`/`.pi` agent skills, `tests/smoke-test.sh` (rewritten for new CLI).
-- Codex/ChatGPT OAuth subscription: interactive auth inside the VM, token persists in `/root` named volume (matches current Podman behavior; hardenable to host-side OAuth + Secret injection later).
+- Keep `codex` available as an interactive in-VM command, but defer Codex OAuth endpoint discovery/lock-down. Users can add manual `network.allow` rules if they choose to use Codex.
 
 ## Capabilities
 

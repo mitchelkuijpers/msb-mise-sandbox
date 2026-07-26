@@ -1,146 +1,203 @@
 # Architecture
 
-## Rootless Podman vs Root Inside the Container
+## Overview
 
-The agent sandbox runs on **rootless Podman** on macOS. This means:
+The agent sandbox provides a microVM environment for coding agents
+(OpenCode, Codex, Pi) with three key properties:
 
-- The Podman daemon runs as your user, not as root.
-- Containers are created inside a Linux VM (Podman Machine) using libkrun or
-  Apple Virtualization.framework.
-- The container user is root (UID 0), but this is **not** host root.
+1. **Isolation** — the agent runs in a lightweight microVM, not a container.
+   No kernel sharing, no host socket mounts, no privileged access.
+2. **Secrets at the boundary** — real API tokens never enter the microVM.
+   The microsandbox runtime intercepts outbound TLS and substitutes
+   placeholders with real values for allowed hosts only.
+3. **Deny-by-default network** — all egress is blocked unless explicitly
+   allowed. Allow rules are per-host, per-protocol, per-port.
 
-In rootless Podman, container UID 0 maps to your host user UID. The container
-root has no more privileges than your user account. Additional UIDs (1-65536)
-map to a subordinate UID range allocated to your user.
+The project uses the [microsandbox](https://github.com/microsandbox/microsandbox)
+TS SDK (v0.6.6) for microVM lifecycle management and the `msb` CLI for
+day-to-day operations.
 
-This means:
-- The agent can install packages as root inside the container.
-- The agent cannot access host resources your user cannot access.
-- The agent cannot gain host root through the container.
-
-## Podman Machine on macOS
-
-Podman on macOS requires a Linux VM because containers are Linux-native. The
-architecture is:
+## Architecture Diagram
 
 ```
-macOS host
-  └── Podman client (SSH)
-      └── Podman Machine (Linux VM, Fedora CoreOS)
-          └── Rootless Podman
-              └── Agent sandbox container
-                  ├── root user (UID 0, mapped to host user)
-                  ├── sshd (port 22, key-only auth)
-                  ├── mise tools (staged, seeded to /root volume)
-                  ├── /workspace (bind mount of project directory)
-                  └── /root (named volume, persistent)
+macOS / Linux host
+  └── Bun runtime
+      └── agent-sandbox CLI (TypeScript, commander)
+          ├── msb CLI (microsandbox lifecycle)
+          └── microsandbox TS SDK (Sandbox.builder, NetworkBuilder)
+              └── Microsandbox Runtime
+                  └── MicroVM
+                       ├── OCI image (Ubuntu 24.04 + mise tools + Docker CE)
+                       ├── /workspace (bind mount of project directory)
+                       ├── /var/lib/docker (disk-backed named volume when docker.enabled)
+                       ├── Secret placeholders (env: $MSB_<NAME>)
+                       └── TLS-intercepting proxy (substitutes secrets)
 ```
 
-The Podman client communicates with the VM over SSH. The VM runs rootless
-Podman inside it. Containers are created and managed within the VM.
+## Build Pipeline
 
-## Persistent Container Lifecycle
-
-The container runs persistently with `sleep infinity` as its command. This
-allows the user to start interactive tools with `podman exec` without
-restarting the container each time.
+The custom OCI image is built in two steps:
 
 ```
-agent-sandbox create .    → podman create (container exists, not running)
-agent-sandbox start .     → podman start (container running, entrypoint seeds /root)
-agent-sandbox shell .     → podman exec -it (interactive bash)
-agent-sandbox opencode .  → podman exec -it (OpenCode TUI)
-agent-sandbox stop .      → podman stop (container paused, state preserved)
-agent-sandbox start .     → podman start (resume, no re-seeding)
-agent-sandbox remove .    → podman rm (container gone, volume may persist)
+docker build --load -t agent-sandbox:latest -f Containerfile .
+docker save agent-sandbox:latest | msb image load --tag agent-sandbox:latest
 ```
 
-## Bind Mount and Named Volume Behavior
+The image is based on `ubuntu:24.04` and includes:
 
-### /workspace (bind mount)
+- System packages (git, curl, build-essential, openssh-client, etc.)
+- [mise](https://mise.jdx.dev/) installed at `/usr/local/bin/mise`
+- Mise-managed tools: Node 24, Python 3.12, Bun, OpenCode, Codex, Pi,
+  ripgrep, fd, openspec
+- A `mise.toml` config copied into `/root/.config/mise/config.toml`
+- Docker CE (`docker-ce`, `docker-ce-cli`, `containerd.io`, buildx and
+  compose plugins) from Docker's official apt repository, plus the
+  `/usr/local/bin/docker-up` per-boot startup helper
 
-The project directory is bind-mounted at `/workspace`. Files created by the
-agent as root inside the container appear as owned by your host user on the
-host (because container root = host user in rootless Podman). The bind mount
-is writable — the agent can modify or delete project files.
+The image has **no entrypoint**. The microsandbox runtime boots the image
+directly. There is no seeding step, no init marker, and no SSH server
+(started by the user if needed).
 
-### /root (named volume)
+## Project Registry
 
-A named Podman volume is mounted at `/root`. This persists:
-- mise tools (`/root/.local/share/mise`)
-- mise config (`/root/.config/mise`)
-- caches (`/root/.cache`)
-- npm cache (`/root/.npm`)
-- cargo cache (`/root/.cargo`)
-- shell history (`/root/.bash_history`)
-- agent sessions and configuration
+Per-project configuration is stored at `~/.agent-sandbox/projects.json`:
 
-**Volume shadowing**: mounting a named volume at `/root` hides any files
-placed there during image creation. Podman does not auto-copy image content
-into volumes (unlike Docker). The entrypoint solves this by seeding `/root`
-from a staging directory (`/opt/agent-sandbox/`) on first start. A marker file
-(`/root/.agent-sandbox-initialized`) prevents re-seeding on subsequent starts,
-preserving user modifications.
-
-## SSH and podman exec
-
-The sandbox supports two access methods:
-
-### podman exec (default, always available)
-
-Interactive access through `podman exec -it` is the primary method. It is
-simpler and more secure:
-
-- No SSH keys to manage or expose.
-- The container's only entry point is the Podman socket (rootless, on the host).
-- Interactive TUIs (OpenCode, Codex) work through `podman exec -it` with full
-  terminal support.
-
-### SSH (for herdr --remote)
-
-An SSH server (sshd) runs inside the container on port 22, enabled by default.
-This allows `herdr --remote <container-name>` to attach as a thin client from
-the host. `herdr --remote` auto-installs a matching herdr binary on the
-container on first connect — the container only needs sshd, not herdr
-pre-installed. The `bin/agent-sandbox` CLI manages the SSH lifecycle:
-
-- Generates a dedicated ed25519 key pair at `~/.ssh/agent-sandbox-ed25519`.
-- Publishes a host port (default 2222) to the container's port 22.
-- Passes the public key into the container via the `AGENT_SSH_PUBKEY` env var.
-- Adds an SSH config alias so `herdr --remote <container-name>` resolves.
-
-SSH can be disabled with `AGENT_SSH=0`. It is automatically disabled when
-`AGENT_NETWORK=none` (no network = no SSH).
-
-## Entrypoint Seeding
-
-The entrypoint (`/usr/local/bin/agent-entrypoint`) runs on every container
-start. On first start (marker absent), it:
-
-1. Creates required directories (`/root/.local/share`, `/root/.config/mise`,
-   `/root/.cache`, `/root/.npm`, `/root/.cargo`, `/root/.local/bin`).
-2. Copies pre-built mise tools from `/opt/agent-sandbox/mise-data` to
-   `/root/.local/share/mise` using `cp -rp` (preserves permissions, not xattrs).
-3. Copies the global mise config to `/root/.config/mise/config.toml`.
-4. Copies the default bashrc to `/root/.bashrc`.
-5. Writes the initialization marker last (only after all copies succeed).
-
-On subsequent starts (marker present), the entrypoint skips seeding and
-directly execs the command. This preserves user-installed tools and
-configuration changes.
-
-## Future: Credential Proxy
-
-The architecture leaves room for a future credential-injecting egress proxy:
-
-```
-agent container
-    ↓ internal network
-credential proxy
-    ↓ authenticated outbound request
-external API
+```typescript
+interface ProjectConfig {
+  image?: string;               // OCI image reference (default: agent-sandbox:latest)
+  gitlab: GitLabConfig;         // GitLab URL + token reference
+  secrets?: SecretEntry[];      // Host-injected secrets
+  env?: Record<string, string>; // Non-sensitive env vars
+  network?: NetworkConfig;      // Egress policy + allow rules
+  resources?: ResourceLimits;   // CPU, memory limits
+  mounts?: MountConfig;         // Guest mount paths; `/root` is not blanket-mounted by default
+  docker?: DockerConfig;        // Opt-in Docker-in-sandbox (disk-backed /var/lib/docker volume)
+  onSecretViolation?:           // Action on secret misuse
+    "block" | "block-and-log" | "block-and-terminate";
+}
 ```
 
-This would allow the agent to access external APIs without credentials being
-stored inside the container. The `AGENT_PROXY_URL` environment variable is
-reserved for this future feature.
+See [Usage](docs/usage.md#project-configuration) for the full schema.
+
+## Secret Placeholder Mechanism
+
+Secrets are injected at the TLS boundary, not as plain environment variables:
+
+1. **Registry**: each secret has an `env` (name inside the sandbox), a `from`
+   source (e.g. `env:HOST_VARIABLE`), and an `allow` host list.
+2. **Resolution**: the CLI reads the real value from the host environment
+   variable at sandbox-creation time.
+3. **Placeholder**: the sandbox environment variable is set to a placeholder
+   string: `$MSB_<env>`. The agent reads this string when it inspects the
+   environment.
+4. **Registration**: the real value is registered on the microsandbox
+   `NetworkBuilder` via `.secret(...)`. TLS interception is enabled.
+5. **Substitution**: when the agent makes an outbound TLS connection to an
+   allowed host, the microsandbox runtime replaces the placeholder with the
+   real value in the TLS stream. Connections to non-allowed hosts are
+   blocked.
+
+```
+Agent process              Microsandbox runtime           External API
+   │                              │                            │
+   │ reads env:                    │                            │
+   │ GITLAB_TOKEN=$MSB_GITLAB_TOKEN                            │
+   │                              │                            │
+   │ ───── TLS connect ────────►  │                            │
+   │       gitlab.com:443         │                            │
+   │                              │ ──── TLS connect ───────►  │
+   │                              │     (with real token)      │
+   │                              │◄──── response ───────────  │
+   │◄──── response ─────────────  │                            │
+```
+
+## Network Policy
+
+The default egress policy is `deny`. All outbound traffic is blocked unless
+explicitly allowed. Allow rules follow the format:
+
+```
+<host>:<protocol>:<port>
+```
+
+- **host**: exact domain name or `*.`-prefixed suffix (e.g. `*.openai.com`)
+- **protocol**: `tcp` or `udp`
+- **port**: 1–65535
+
+DNS resolution is automatically allowed when the default policy is `deny`,
+so domain-based allow rules can resolve.
+
+To fully isolate a sandbox (no network access at all), set `network.allow`
+to an empty array.
+
+## Docker-in-sandbox
+
+Docker support is an opt-in, per-project capability (`docker.enabled`).
+
+### Disk-backed data volume
+
+`dockerd`'s default overlay2 storage driver cannot stack on the sandbox's
+overlay-backed rootfs, so a disk-backed named volume at `/var/lib/docker`
+is **required**, not just for persistence. When `docker.enabled` is true,
+`createSandbox` mounts `<project>-docker-data` via the SDK's
+`namedWith(name, "ensure-exists", "disk", sizeMib)` — created-or-reused
+idempotently as an ext4 volume (`/dev/vd?` in the guest). The volume
+persists across `agent-sandbox remove`, preserving pulled images and build
+cache; the CLI prints the `msb volume rm <project>-docker-data` cleanup
+command on removal.
+
+`docker.dataVolumeSize` is validated at registry load (`^[0-9]+[MG]$`,
+minimum 1024 MiB). Docker support requires the stock `agent-sandbox:latest`
+image; pairing `docker.enabled: true` with a custom image fails fast at
+create time with an actionable error.
+
+### Per-boot daemon lifecycle
+
+The microVM has no init system, so `dockerd` is not started automatically.
+The `/usr/local/bin/docker-up` helper starts it on demand: a no-op when
+`docker info` already answers; otherwise it starts `dockerd` in the
+background (log at `/tmp/dockerd.log`) and waits up to 60s for readiness.
+Because the rootfs is ephemeral across stop/start (only named volumes
+persist), the daemon must be re-started each boot — pulled images survive
+only because they live on the data volume.
+
+### Registry egress
+
+Docker Hub pulls need `auth.docker.io`, `registry-1.docker.io`, and the
+blob CDN `production.cloudfront.docker.com` (the legacy
+`production.cloudflare.docker.com` variant is also documented) in
+`network.allow` — `docker.enabled` does not imply any egress.
+
+## Sandbox Lifecycle
+
+```
+agent-sandbox build          → docker build + msb image load
+agent-sandbox project add    → write ~/.agent-sandbox/projects.json
+agent-sandbox create         → Sandbox.builder() + .create() (+ /var/lib/docker volume if docker.enabled)
+agent-sandbox start          → msb start <name>
+agent-sandbox shell          → Sandbox.attachShell()
+agent-sandbox exec           → Sandbox.execWith()
+agent-sandbox opencode/codex/pi → Sandbox.attach("opencode"/"codex"/"pi")
+docker-up (inside sandbox)  → start dockerd manually per boot (no init system)
+agent-sandbox stop           → msb stop <name>
+agent-sandbox restart        → stop + start
+agent-sandbox remove         → msb remove <name> (preserves <project>-docker-data volume)
+agent-sandbox list           → msb list --format json
+agent-sandbox doctor         → health checks
+agent-sandbox project list   → read registry
+agent-sandbox project remove → remove from registry
+```
+
+## CLI Implementation
+
+The CLI is a TypeScript application run via [Bun](https://bun.sh/):
+
+- **Entry point**: `src/cli.ts` — uses `commander` for CLI framework
+- **Commands**: implemented in `src/commands/` as async functions
+- **Library code**: in `src/lib/` — sandbox lifecycle, network policy
+  builder, secrets resolver, config loader
+- **Type system**: `src/types.ts` defines `ProjectConfig`, `SecretEntry`,
+  `NetworkConfig`, etc.
+
+The `bin/agent-sandbox` launcher is a thin bash wrapper that delegates to
+`bun run src/cli.ts`.

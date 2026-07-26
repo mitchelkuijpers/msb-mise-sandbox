@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "microsandbox": {
+      "source": "superradcompany/skills",
+      "sourceType": "github",
+      "skillPath": "microsandbox/SKILL.md",
+      "computedHash": "fd83992115e202779daa096fd8401220d367f8dfc0e51bd3b01e080eb90106d2"
+    }
+  }
+}

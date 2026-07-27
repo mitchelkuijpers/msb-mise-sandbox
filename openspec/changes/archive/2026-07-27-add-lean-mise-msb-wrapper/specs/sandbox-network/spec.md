@@ -10,9 +10,29 @@ The layered TOML schema SHALL accept named port tables with a required host port
 - **WHEN** a named port specifies host port 8080 only
 - **THEN** the generated command contains `--port 127.0.0.1:8080:8080`
 
+#### Scenario: Forward with explicit guest port and bind
+- **WHEN** a named port specifies host port 8080, guest port 80, and bind `0.0.0.0`
+- **THEN** the generated command contains `--port 0.0.0.0:8080:80`
+
+#### Scenario: Forward a UDP port
+- **WHEN** a named port specifies protocol `udp`
+- **THEN** the generated `--port` value includes `/udp`
+
 #### Scenario: Forward an explicit UDP mapping
 - **WHEN** a named port specifies bind `0.0.0.0`, host 5353, guest 53, and protocol `udp`
 - **THEN** the generated command contains `--port 0.0.0.0:5353:53/udp`
+
+#### Scenario: No ports configured
+- **WHEN** the merged configuration defines no `ports` entries
+- **THEN** the generated command contains no `--port` arguments
+
+#### Scenario: Invalid host port rejected at registry load
+- **WHEN** a port entry has a host port outside the range 1 through 65535
+- **THEN** validation rejects the entry at config load with the field path and no `msb` command runs
+
+#### Scenario: Invalid protocol rejected at registry load
+- **WHEN** a port entry has a protocol other than `tcp` or `udp`
+- **THEN** validation rejects the entry at config load with the field path and no `msb` command runs
 
 #### Scenario: Invalid port is rejected before msb execution
 - **WHEN** a port is outside the range 1 through 65535
@@ -22,9 +42,17 @@ The layered TOML schema SHALL accept named port tables with a required host port
 
 When a port omits its bind address, the CLI SHALL render `127.0.0.1` explicitly so the published port is not reachable through other host interfaces. Binding to another interface SHALL require an explicit configuration value.
 
+#### Scenario: Omitted bind defaults to loopback
+- **WHEN** a TCP port omits its bind address
+- **THEN** the generated `--port` value begins with `127.0.0.1:`
+
 #### Scenario: Omitted bind is explicit in argv
 - **WHEN** a TCP port omits its bind address
 - **THEN** the generated `--port` value begins with `127.0.0.1:`
+
+#### Scenario: Explicit all-interfaces bind
+- **WHEN** a port specifies bind `0.0.0.0`
+- **THEN** the generated `--port` value begins with `0.0.0.0:`
 
 #### Scenario: All-interface bind requires opt-in
 - **WHEN** a port specifies bind `0.0.0.0`

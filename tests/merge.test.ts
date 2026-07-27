@@ -1,0 +1,111 @@
+import { describe, expect, test } from "bun:test";
+import { mergeConfigs } from "../src/config/merge.js";
+import type { PartialConfig } from "../src/config/types.js";
+
+describe("mergeConfigs", () => {
+  test("scalar override: project cpus replace personal", () => {
+    const merged = mergeConfigs([
+      { runtime: { cpus: 2 } },
+      { runtime: { cpus: 6 } },
+    ]);
+    expect(merged.runtime.cpus).toBe(6);
+  });
+
+  test("env deep merge: later keys override earlier", () => {
+    const merged = mergeConfigs([
+      { env: { A: "1", B: "2" } },
+      { env: { B: "3", C: "4" } },
+    ]);
+    expect(merged.env).toEqual({ A: "1", B: "3", C: "4" });
+  });
+
+  test("named tables merge by entry name", () => {
+    const merged = mergeConfigs([
+      {
+        mounts: {
+          cache: { kind: "named", source: "vol1", target: "/tmp/a" },
+        },
+      },
+      {
+        mounts: {
+          workspace: { kind: "dir", source: ".", target: "/workspace" },
+          cache: { kind: "named", source: "vol2", target: "/tmp/b" },
+        },
+      },
+    ]);
+    expect(Object.keys(merged.mounts).sort()).toEqual(["cache", "workspace"]);
+    expect(merged.mounts.cache?.target).toBe("/tmp/b");
+    expect(merged.mounts.workspace?.target).toBe("/workspace");
+  });
+
+  test("network.allow inherits and dedupes by default", () => {
+    const merged = mergeConfigs([
+      { network: { allow: ["github.com:tcp:443", "a.example:tcp:443"] } },
+      { network: { allow: ["a.example:tcp:443", "b.example:tcp:443"] } },
+    ]);
+    expect(merged.network.inherit).toBe(true);
+    expect(merged.network.allow).toEqual([
+      "github.com:tcp:443",
+      "a.example:tcp:443",
+      "b.example:tcp:443",
+    ]);
+  });
+
+  test("network.inherit = false resets allow to overlay only", () => {
+    const merged = mergeConfigs([
+      { network: { allow: ["github.com:tcp:443"] } },
+      {
+        network: {
+          allow: ["only.example:tcp:443"],
+          inherit: false,
+        },
+      },
+    ]);
+    expect(merged.network.inherit).toBe(false);
+    expect(merged.network.allow).toEqual(["only.example:tcp:443"]);
+  });
+
+  test("command arrays replace rather than concatenate", () => {
+    const merged = mergeConfigs([
+      { command: { argv: ["bash", "-l"] } },
+      { command: { argv: ["fish"] } },
+    ]);
+    expect(merged.command?.argv).toEqual(["fish"]);
+  });
+
+  test("empty layers produce built-in defaults", () => {
+    const merged = mergeConfigs([]);
+    expect(merged.runtime.cpus).toBe(4);
+    expect(merged.runtime.memory).toBe("8G");
+    expect(merged.network.defaultEgress).toBe("allow");
+    expect(merged.network.inherit).toBe(true);
+    expect(merged.workdirTarget).toBe("/workspace");
+  });
+
+  test("identical inputs produce identical output (determinism)", () => {
+    const layer: PartialConfig = {
+      env: { A: "1" },
+      mounts: {
+        cache: { kind: "named", source: "v", target: "/cache" },
+      },
+      ports: {
+        web: { hostPort: 8080 },
+      },
+      secrets: {
+        K: { from: "ENV_K", hosts: ["api.example"] },
+      },
+      network: { allow: ["a:tcp:1", "b:tcp:2"] },
+    };
+    const a = mergeConfigs([layer]);
+    const b = mergeConfigs([layer]);
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
+  });
+
+  test("scalar last-non-empty wins (empty overlay does not erase)", () => {
+    const merged = mergeConfigs([
+      { build: { from: "ubuntu:22.04" } },
+      { build: { from: "" } },
+    ]);
+    expect(merged.build.from).toBe("ubuntu:22.04");
+  });
+});

@@ -2,553 +2,286 @@
 
 ## Commands
 
-### build
+| Command | Purpose |
+|---|---|
+| `build [--print]` | Build OCI image from project's `mise.toml` |
+| `create <name> [--print]` | Create a sandbox from the merged config |
+| `run <name> [-- cmd...]` | Create (or start) and exec the configured command |
+| `shell <name> [--print]` | Attach an interactive shell |
+| `exec <name> -- cmd...` | Execute a single command in a running sandbox |
+| `start <name>` | Start a stopped sandbox |
+| `stop <name>` | Stop a running sandbox |
+| `remove <name>` | Remove a sandbox |
+| `list` | List sandboxes |
+| `config` | Print the effective merged configuration |
+| `install [--force]` | Symlink `~/.local/bin/mise-msb` |
 
-```bash
-agent-sandbox build
+All lifecycle commands accept `--print` (alias `--dry-run`) to print the
+generated `msb` argv without executing it. Multi-step commands like
+`run` print each step in execution order.
+
+## Configuration Layers
+
+Configuration is loaded from up to three layers, merged in order:
+
+1. **Built-in defaults** (always applied)
+2. **Personal defaults** at `~/.config/mise-msb/config.toml` (optional)
+3. **Project config** at `<project>/.sandbox.toml` (optional)
+4. **CLI overrides** (highest precedence)
+
+Pass `--config <absolute-path>` to skip project discovery.
+
+### Merge Rules
+
+| Section | Strategy |
+|---|---|
+| Scalar fields (`build.from`, `build.tag`, `runtime.cpus`, etc.) | Last non-empty wins |
+| `env` (record) | Deep merge; later keys override earlier |
+| Named `mounts`, `ports`, `secrets` tables | Merge by name; later entry replaces earlier |
+| `network.allow` (array of strings) | Append + dedupe unless `network.inherit = false`, in which case overlay replaces |
+| `network.defaultEgress` | Last non-null value wins |
+| `command.argv` (array) | Replace (does not concatenate) |
+| `labels` (record) | Deep merge; later keys override earlier |
+
+Identical inputs always produce identical merged output — the merge is a
+pure function and the resulting argv is byte-identical for the same
+config.
+
+## Schema Reference
+
+### `[build]`
+
+```toml
+[build]
+from = "ubuntu:24.04"          # base image for mise oci build
+tag = "my-project:dev"          # local image tag (defaults to <name>:dev)
+builderImage = "ubuntu:24.04"   # Linux image used on macOS for builds
 ```
 
-Builds the custom OCI image (`agent-sandbox:latest`) from the `Containerfile`
-and loads it into the microsandbox runtime. Uses Docker for the build and
-`msb image load` for the import.
+### `[runtime]`
 
-Prerequisites: Docker must be installed and running.
-
-### project add
-
-```bash
-agent-sandbox project add <name>
+```toml
+[runtime]
+cpus = 4                # positive integer
+memory = "8G"           # M or G suffix
 ```
 
-Interactively registers a new project in `~/.agent-sandbox/projects.json`.
-Prompts for:
+### `[network]`
 
-- **GitLab URL** — default `https://gitlab.com`
-- **Token environment variable** — the host env var name (default
-  `GITLAB_TOKEN`)
-- **Additional secrets** — optionally add more secrets (env name, host
-  source, allowed hosts)
-- **Enable Docker support?** — whether to mount a disk-backed
-  `/var/lib/docker` volume (requires the stock `agent-sandbox:latest`
-  image). Default: no. See [Docker inside the Sandbox](#docker-inside-the-sandbox).
-
-### project list
-
-```bash
-agent-sandbox project list
+```toml
+[network]
+defaultEgress = "deny"   # "allow" (default) or "deny"
+allow = ["github.com:tcp:443"]
+inherit = true           # when false, overlay's allow replaces inherited
 ```
 
-Lists all registered projects with their GitLab URL and secret names
-(values are never displayed).
+Each entry uses `<host>:<protocol>:<port>` syntax. Suffix matches are
+expressed as `*.example.com:tcp:443`. The wrapper translates each rule
+to `--net-rule allow@<host>:<proto>:<port>`.
 
-### project remove
+### `[env]`
 
-```bash
-agent-sandbox project remove <name>
+```toml
+[env]
+NODE_ENV = "development"
+DEBUG = "1"
 ```
 
-Removes a project from the registry. Does not remove the sandbox — use
-`agent-sandbox remove` for that.
+Keys must be valid environment variable identifiers (`[A-Za-z_][A-Za-z0-9_]*`).
 
-### create
+### `[mounts.<name>]`
 
-```bash
-agent-sandbox create <project>
+```toml
+[mounts.workspace]
+kind = "dir"        # dir | file | disk | named
+source = "."        # host path (or named volume name)
+target = "/workspace"  # absolute guest path
+options = "ro"      # optional, forwarded verbatim
+
+[mounts.cache]
+kind = "named"
+source = "cache-vol"
+target = "/root/.cache"
+
+[mounts.data]
+kind = "disk"
+source = "/srv/data.img"
+target = "/data"
+size = "10G"        # required for disk mounts
 ```
 
-Creates a sandbox microVM from the registered project configuration. Uses
-the `microsandbox` TS SDK to configure:
+### `[ports.<name>]`
 
-- OCI image (from `project.image`)
-- CPU and memory limits (from `project.resources`)
-- Workspace bind mount (current working directory → `/workspace`)
-- Docker data volume at `/var/lib/docker` when `docker.enabled` is true
-  (disk-backed `<project>-docker-data` volume, sized by `docker.dataVolumeSize`)
-- Non-sensitive environment variables (from `project.env`)
-- Secret placeholders (from `project.secrets`)
-- Network policy (from `project.network`)
-
-The sandbox is created in a running state.
-
-### start
-
-```bash
-agent-sandbox start <project>
+```toml
+[ports.dev]
+hostPort = 8080
+guestPort = 8080    # defaults to hostPort
+protocol = "tcp"    # "tcp" (default) or "udp"
+bind = "127.0.0.1"  # defaults to loopback
 ```
 
-Resumes a stopped sandbox. The microVM state is preserved.
+### `[secrets.<name>]`
 
-### stop
-
-```bash
-agent-sandbox stop <project>
+```toml
+[secrets.GITLAB_TOKEN]
+from = "GITLAB_TOKEN"           # source host env var
+hosts = ["gitlab.com"]          # allowed destination hosts
 ```
 
-Gracefully stops a running sandbox. The microVM state is preserved — use
-`start` to resume.
+The wrapper verifies `from` is present in the host environment without
+reading its value, then emits `--secret GITLAB_TOKEN@gitlab.com`.
 
-### restart
+### `[labels]`
 
-```bash
-agent-sandbox restart <project>
+```toml
+[labels]
+team = "platform"
 ```
 
-Stops (if running) and starts the sandbox.
+## Secret Configuration
 
-### remove
+The TOML schema for secrets contains **references only**:
 
-```bash
-agent-sandbox remove <project>
-```
+- `from` — the host environment variable name (e.g. `GITLAB_TOKEN`).
+- `hosts` — allowed destination hosts (e.g. `["gitlab.com"]`).
 
-Removes a stopped sandbox from the microsandbox database. The project
-registry entry is not affected — use `project remove` for that. If the
-project had `docker.enabled: true`, the `<project>-docker-data` volume is
-**preserved** (so pulled images and build cache survive re-creation) and
-`remove` prints its name plus the `msb volume rm <project>-docker-data`
-cleanup command.
+The wrapper:
 
-### list
+1. Verifies `from` is set in the host environment. Missing variables
+   cause a non-zero exit before any `msb` command runs.
+2. Emits one `--secret FROM@HOST` argument per host.
+3. Never reads, copies, logs, or places the secret value in argv.
 
-```bash
-agent-sandbox list
-```
+The microsandbox runtime resolves the value from the inherited host
+environment at sandbox start time. Inline `FROM=VALUE@HOST` syntax is
+rejected by `msb` by design.
 
-Lists all sandboxes with their name, status, and creation date.
+## Network Policy
 
-### shell
+The default egress policy is `allow` — sandboxes can reach any
+destination unless the project explicitly sets `network.defaultEgress =
+"deny"` and configures `network.allow`.
 
-```bash
-agent-sandbox shell <project>
-```
+Secret hosts automatically receive network access: when a secret allows
+`api.example.com`, the wrapper ensures an equivalent `--net-rule` exists
+unless the project already specifies one.
 
-Opens an interactive shell inside the sandbox. Uses the microsandbox SDK's
-`attachShell()` which forwards the terminal TTY.
+## Migration from `projects.json`
 
-### exec
+Projects previously stored in `~/.agent-sandbox/projects.json` should be
+translated to per-project `.sandbox.toml` files:
 
-```bash
-agent-sandbox exec <project> -- <command> [args...]
-```
-
-Runs a command inside the sandbox (non-interactive, TTY attached).
-
-Examples:
-
-```bash
-agent-sandbox exec my-project -- mise --version
-agent-sandbox exec my-project -- apt-get update
-agent-sandbox exec my-project -- node --version
-```
-
-### opencode
-
-```bash
-agent-sandbox opencode <project>
-```
-
-Launches OpenCode inside the sandbox. Uses `Sandbox.attach("opencode")`
-which runs the command interactively with the parent TTY attached.
-
-### codex
-
-```bash
-agent-sandbox codex <project>
-```
-
-Launches Codex inside the sandbox. Uses `Sandbox.attach("codex")`.
-
-> **Note:** Codex OAuth endpoint discovery is out of scope for this change.
-> If you choose to use Codex, you may need to add manual `network.allow`
-> rules for the hosts it needs.
-
-### pi
-
-```bash
-agent-sandbox pi <project>
-```
-
-Launches Pi inside the sandbox. Uses `Sandbox.attach("pi")`.
-
-> **Note:** Pi uses provider API keys via environment variables (e.g.,
-> `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`). Configure these as secrets in the
-> project registry with appropriate `network.allow` rules for the providers
-> you use.
-
-### doctor
-
-```bash
-agent-sandbox doctor
-```
-
-Runs health checks on the setup:
-
-- `msb` CLI is installed and functional
-- `msb doctor` passes
-- `agent-sandbox:latest` image is cached in microsandbox
-- `projects.json` is valid
-
-## Project Configuration
-
-Projects are stored in `~/.agent-sandbox/projects.json`. The full schema:
-
-### `gitlab` (required)
-
-```json
+```jsonc
+// ~/.agent-sandbox/projects.json (old)
 {
-  "gitlab": {
-    "url": "https://gitlab.com",
-    "tokenRef": "env:GITLAB_TOKEN"
-  }
-}
-```
-
-- **url**: GitLab instance URL.
-- **tokenRef**: Reference to the GitLab token source. Format:
-  `env:VARIABLE_NAME` to read from the host environment.
-
-### `secrets` (optional)
-
-```json
-{
-  "secrets": [
-    {
-      "env": "GITLAB_TOKEN",
-      "from": "env:GITLAB_TOKEN",
-      "allow": "gitlab.com"
-    },
-    {
-      "env": "OPENAI_API_KEY",
-      "from": "env:OPENAI_API_KEY",
-      "allow": ["*.openai.com", "api.openai.com"]
+  "projects": {
+    "my-project": {
+      "image": "agent-sandbox:latest",
+      "gitlab": { "url": "https://gitlab.com", "tokenRef": "env:GITLAB_TOKEN" },
+      "secrets": [
+        { "env": "GITLAB_TOKEN", "from": "env:GITLAB_TOKEN", "allow": "gitlab.com" }
+      ],
+      "network": {
+        "defaultEgress": "deny",
+        "allow": ["gitlab.com:tcp:443"]
+      },
+      "resources": { "cpus": 4, "memory": "8G" }
     }
-  ]
-}
-```
-
-- **env**: Environment variable name inside the sandbox. Becomes a
-  placeholder (`$MSB_<env>`).
-- **from**: Source of the real value on the host. Must be
-  `env:VARIABLE_NAME`.
-- **allow**: Host(s) allowed to receive this secret. Single string or array.
-  Supports `*.` suffix patterns.
-
-### `env` (optional)
-
-```json
-{
-  "env": {
-    "MY_VAR": "some-value",
-    "LOG_LEVEL": "debug"
   }
 }
 ```
 
-Non-sensitive environment variables passed as-is to the sandbox. These are
-not subject to placeholder substitution — they are set directly.
+becomes:
 
-### `network` (optional)
+```toml
+# <project>/.sandbox.toml
+[build]
+from = "ubuntu:24.04"
 
-```json
-{
-  "network": {
-    "defaultEgress": "deny",
-    "allow": [
-      "gitlab.com:tcp:443",
-      "*.openai.com:tcp:443",
-      "registry.npmjs.org:tcp:443"
-    ]
-  }
-}
+[runtime]
+cpus = 4
+memory = "8G"
+
+[network]
+defaultEgress = "deny"
+allow = ["gitlab.com:tcp:443"]
+
+[secrets.GITLAB_TOKEN]
+from = "GITLAB_TOKEN"
+hosts = ["gitlab.com"]
 ```
 
-- **defaultEgress**: `"deny"` (default) or `"allow"`. When `"deny"`, all
-  outbound traffic is blocked unless explicitly allowed. DNS resolution is
-  automatically permitted.
-- **allow**: Array of rule strings in format `<host>:<protocol>:<port>`.
+After migration, `~/.agent-sandbox/projects.json` can be deleted.
 
-Rule format:
+## Build Flow
 
-| Part | Description | Example |
-|---|---|---|
-| host | Exact domain or `*.` suffix pattern | `gitlab.com`, `*.openai.com` |
-| protocol | `tcp` or `udp` | `tcp` |
-| port | 1–65535 | `443` |
+### Linux hosts
 
-### `resources` (optional)
-
-```json
-{
-  "resources": {
-    "cpus": 4,
-    "memory": "8G"
-  }
-}
+```
+mise oci build --from <base> --tag <tag> --output <layout>
+tar -C <layout> -cf <image.tar> .
+msb image load --input <image.tar> --tag <tag>
 ```
 
-- **cpus**: CPU core count (default: 4).
-- **memory**: Memory limit string (default: `"8G"`). Supports `K`, `M`, `G`
-  suffixes.
+### macOS hosts
 
-### `mounts` (optional)
+```
+msb run <builder-image> \
+    --mount-dir <project>:/workspace:ro \
+    --mount-dir <output>:/out:rw \
+    --env MISE_EXPERIMENTAL=1 \
+    -- mise oci build --from <base> --tag <tag> --output /out/layout
 
-```json
-{
-  "mounts": {
-    "workspace": "/workspace",
-    "root": "/root"
-  }
-}
+tar -C <output>/layout -cf <output>/image.tar .
+msb image load --input <output>/image.tar --tag <tag>
 ```
 
-- **workspace**: Bind mount target for the project directory (default:
-  `/workspace`). Currently only workspace is mounted.
-- **root**: Default home-directory path inside the sandbox (default: `/root`).
-  It is kept in the schema for compatibility, but a blanket `/root` volume is
-  not mounted because it would mask image content.
+The macOS path runs `mise oci build` inside a Linux microVM to avoid
+embedding host-native macOS binaries. The builder image defaults to
+`ubuntu:24.04` and must contain a recent mise with experimental OCI
+support.
 
-### `image` (optional)
+Use `mise-msb build --print` to inspect the exact commands without
+running them.
 
-```json
-{
-  "image": "agent-sandbox:latest"
-}
-```
+## Print Mode
 
-OCI image reference. Default: `agent-sandbox:latest`.
-
-### `docker` (optional)
-
-```json
-{
-  "docker": {
-    "enabled": true,
-    "dataVolumeSize": "10G"
-  }
-}
-```
-
-- **enabled**: When `true`, sandbox creation mounts a disk-backed named
-  volume (`<project>-docker-data`) at `/var/lib/docker`. This is required
-  for `dockerd` — its overlay2 storage driver cannot stack on the sandbox's
-  overlay rootfs. Default: `false`.
-- **dataVolumeSize**: Size of the data volume: a positive integer with an
-  uppercase `M` (MiB) or `G` (GiB) suffix, minimum `1024` MiB (`1G`).
-  Default: `"10G"`. Examples: `"10G"`, `"50G"`, `"2048M"`.
-
-Docker support requires the stock `agent-sandbox:latest` image (or its
-`docker.io/library/agent-sandbox:latest` alias) — the engine, CLI, plugins,
-and `docker-up` helper are baked into that image. Creation fails fast with
-an actionable error if `docker.enabled: true` is paired with any other
-image. See [Docker inside the Sandbox](#docker-inside-the-sandbox).
-
-### `onSecretViolation` (optional)
-
-```json
-{
-  "onSecretViolation": "block"
-}
-```
-
-Action when a secret placeholder is sent to a non-allowed host:
-
-| Value | Behavior |
-|---|---|
-| `"block"` (default) | Block request, continue |
-| `"block-and-log"` | Block request and log violation |
-| `"block-and-terminate"` | Terminate sandbox on violation |
-
-## Secret Integration Patterns
-
-### Basic: GitLab token for a single project
+`--print` (alias `--dry-run`) outputs the generated `msb` argv without
+executing it. Multi-step commands print each step in execution order,
+separated by blank lines.
 
 ```bash
-# On the host, set the token
-export GITLAB_TOKEN=glpat-xxxxx
+$ mise-msb run my-project -- bun test --print
+msb create my-project:dev --name my-project --cpus 4 --memory 8G \
+    --workdir /workspace --env NODE_ENV=development --net-default deny
 
-# During `project add`, accept defaults for GitLab URL and token env var.
-# The token is now available to the agent as GITLAB_TOKEN.
-
-# Network rule to allow GitLab access
-# (added automatically — you provide it during project add or edit the JSON)
+msb exec my-project -- bun test
 ```
 
-The agent reads `$GITLAB_TOKEN` from the environment inside the sandbox.
-It sees the placeholder `$MSB_GITLAB_TOKEN`. When it connects to
-`gitlab.com:443`, the microsandbox runtime substitutes the real token.
-
-### Multiple secrets with different allowed hosts
-
-```json
-{
-  "secrets": [
-    {
-      "env": "GITLAB_TOKEN",
-      "from": "env:GITLAB_TOKEN",
-      "allow": "gitlab.com"
-    },
-    {
-      "env": "OPENAI_API_KEY",
-      "from": "env:OPENAI_API_KEY",
-      "allow": "*.openai.com"
-    },
-    {
-      "env": "NPM_TOKEN",
-      "from": "env:NPM_TOKEN",
-      "allow": "registry.npmjs.org"
-    }
-  ]
-}
-```
-
-Each secret is registered independently. The runtime only substitutes each
-placeholder when connecting to its allowed host(s).
-
-### Full isolation (no network)
-
-```json
-{
-  "network": {
-    "defaultEgress": "deny",
-    "allow": []
-  }
-}
-```
-
-The sandbox has no outbound network access. Tools must be pre-installed in
-the image.
-
-### Allowing a host for OpenCode/Codex/Pi
-
-If the agent needs to reach an API that is not in the allow list, add the
-host to `network.allow`:
-
-```json
-{
-  "network": {
-    "allow": ["api.custom-service.com:tcp:443"]
-  }
-}
-```
-
-> **Note:** Codex OAuth endpoint discovery is intentionally not locked down
-> in this change. If you use Codex, start by adding the specific hosts it
-> needs to `network.allow` manually.
-
-## Docker inside the Sandbox
-
-The image ships Docker CE (`dockerd`, `docker` CLI, containerd, buildx,
-compose v2). Docker is opt-in per project and requires a disk-backed
-`/var/lib/docker` volume.
-
-### Starting the daemon: `docker-up`
-
-The microVM has no init system, so the daemon is started manually per boot
-via the `docker-up` helper:
+Secret arguments contain source environment variable names only:
 
 ```bash
-agent-sandbox exec my-project -- docker-up
-# or from a shell inside the sandbox:
-docker-up
+$ mise-msb create my-project --print
+msb create my-project:dev --name my-project --secret GITLAB_TOKEN@gitlab.com ...
 ```
 
-`docker-up` is idempotent: it is a no-op (success) when `docker info`
-already answers, starts `dockerd` in the background (log at
-`/tmp/dockerd.log`) and waits up to 60s for readiness otherwise, and exits
-non-zero with the log on failure. If `/var/lib/docker` is not a disk-backed
-volume (e.g. Docker is enabled in config but the sandbox predates it), it
-fails with an actionable error pointing at `docker.enabled`.
-
-### Registry egress rules
-
-Docker pulls are subject to the deny-by-default network policy. Add the
-registry hosts to `network.allow` (all `:tcp:443`):
-
-| Registry | Hosts |
-|---|---|
-| Docker Hub | `auth.docker.io`, `registry-1.docker.io`, `production.cloudfront.docker.com` (blob CDN). `production.cloudflare.docker.com` is the legacy CDN variant — include both to be safe. |
-| ghcr.io | `ghcr.io`, `github.com` (auth), and the GitHub blob CDN (`*.githubusercontent.com` does not cover the CDN; check the redirect target if pulls fail). |
-
-`docker.enabled` does **not** imply any network rules — add them explicitly.
-
-### Cache persistence and cleanup
-
-The `<project>-docker-data` volume persists across `agent-sandbox remove`,
-so pulled images and build cache survive sandbox re-creation. On removal,
-the CLI prints the preserved volume name and the cleanup command:
+## Install
 
 ```bash
-msb volume rm my-project-docker-data
+# Symlink ~/.local/bin/mise-msb → <repo>/bin/mise-msb
+mise-msb install
+
+# Replace an existing link or file at the destination
+mise-msb install --force
+
+# The wrapper refuses to recursively remove a directory at the destination,
+# even with --force.
 ```
 
-### Memory guidance
+The install command does not modify shell startup files. If
+`~/.local/bin` is not on `$PATH`, a one-line hint is printed after a
+successful install.
 
-Running containers share the sandbox's CPU/memory limits, and `dockerd`
-plus image builds are memory-hungry. Raise `resources.memory` for large
-builds (the image default is `8G`; the microsandbox Docker-in-sandbox recipe
-baseline is `2G`):
-
-```json
-{
-  "resources": { "cpus": 4, "memory": "16G" },
-  "docker": { "enabled": true, "dataVolumeSize": "50G" }
-}
-```
-
-## Environment Variables
-
-The CLI itself accepts:
-
-| Variable | Description |
-|---|---|
-| `GITLAB_TOKEN` | GitLab personal access token (referenced by `tokenRef`) |
-| (any secret source) | Any host env var referenced by a secret's `from` field |
-
-All configuration (image, resources, network rules, secrets) is stored in
-the project registry, not in environment variables. Use `agent-sandbox
-project add` or edit `~/.agent-sandbox/projects.json` directly.
-
-## Troubleshooting
-
-**Build fails**
-```bash
-docker build --load -t agent-sandbox:latest -f Containerfile .
-```
-If Docker is not running or the network is flaky, retry. The build script
-retries apt operations up to 3 times.
-
-**Sandbox creation fails**
-```bash
-agent-sandbox doctor
-```
-Check that `msb doctor` passes and the image is cached.
-
-**Secret not substituted**
-- Verify the host environment variable is set and non-empty.
-- Verify the `from` field uses `env:VARIABLE_NAME` format.
-- Verify the host the agent is connecting to matches an `allow` entry.
-- Check the violation policy: if it's `"block"`, the connection is silently
-  dropped.
-
-**Network rule not working**
-- Verify the rule format: `<host>:<protocol>:<port>`.
-- For subdomain patterns, use `*.example.com` (not `*example.com` or
-  `*.example.com:*`).
-- DNS must be resolvable. When `defaultEgress` is `"deny"`, DNS is
-  automatically allowed.
-
-## Manual Validation Notes
-
-The following areas have not been fully validated and may require manual
-testing:
-
-- **Codex network rules**: Codex OAuth endpoint discovery is out of scope
-  for this change. If you use Codex, add the required hosts to
-  `network.allow` manually.
-- **Pi network rules**: Pi uses provider API keys (Anthropic, OpenAI, etc.).
-  Add the required hosts to `network.allow` manually. Provider API keys should
-  be configured as secrets in the project registry.
-- **Tool-specific auth behavior**: the core placeholder mechanism is verified,
-  but each agent still depends on its own expected env var names and provider
-  configuration. If a specific tool fails to authenticate, confirm that the
-  correct secret/env var and `network.allow` hosts are configured.
+A `mise run install` task in the tool repository's `mise.toml` invokes
+the wrapper's `install` command, so `mise run install` in the repo
+installs the tool.

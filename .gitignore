@@ -3,3 +3,6 @@
 
 # Dependencies
 node_modules/
+
+# mise-msb transient build outputs
+.mise-msb-build/

@@ -1,41 +1,88 @@
 /**
- * `agent-sandbox build` — build the custom OCI image and load it into
- * microsandbox.
- *
- * 1. `docker build -t agent-sandbox:latest -f Containerfile .`
- * 2. `docker save agent-sandbox:latest | msb image load --tag agent-sandbox:latest`
+ * `build` — Build OCI image from the project's mise.toml.
  */
 
-import { execSync } from "node:child_process";
-import { resolve } from "node:path";
+import { buildOciImage, planMacOsBuilder, runMacOsBuilder, shouldUseDirectMise } from "../build/oci.js";
+import type { GlobalOptions } from "./dispatch.js";
+import { resolveInvocation } from "./_shared.js";
 
-/** Resolve the project root (where Containerfile lives). */
-function projectRoot(): string {
-  // This file is at src/commands/build.ts → two levels up is the root.
-  return resolve(import.meta.dirname ?? __dirname, "..", "..");
-}
+export async function runBuildCommand(
+  global: GlobalOptions,
+  args: string[],
+): Promise<void> {
+  const { config, projectRoot, print } = await resolveInvocation(global, args);
+  void args;
 
-export async function buildImage(): Promise<void> {
-  const root = projectRoot();
+  const platform = process.platform;
+  if (!shouldUseDirectMise(platform) && platform !== "darwin") {
+    throw new Error(
+      `mise-msb build: unsupported host platform "${platform}" — Linux or macOS required`,
+    );
+  }
 
-  console.log("🔨 Building agent-sandbox:latest from Containerfile…");
-  execSync(`docker build --load -t agent-sandbox:latest -f Containerfile .`, {
-    cwd: root,
-    stdio: "inherit",
+  if (print) {
+    const { formatArgvGroups } = await import("../msb/print.js");
+    if (shouldUseDirectMise(platform)) {
+      const miseArgv = [
+        "mise",
+        "oci",
+        "build",
+        "--from",
+        config.build.from,
+        "--tag",
+        config.build.tag,
+        "--output",
+        "<temp-output>/layout",
+      ];
+      const tarArgv = ["tar", "-C", "<temp-output>/layout", "-cf", "<temp-output>/image.tar", "."];
+      const loadArgv = ["msb", "image", "load", "--input", "<temp-output>/image.tar", "--tag", config.build.tag];
+      process.stdout.write(formatArgvGroups([miseArgv, tarArgv, loadArgv]) + "\n");
+    } else {
+      const plan = planMacOsBuilder({
+        config,
+        projectRoot,
+        outputDir: "<temp-output>",
+      });
+      const tarArgv = ["tar", "-C", "<temp-output>/layout", "-cf", "<temp-output>/image.tar", "."];
+      const loadArgv = ["msb", "image", "load", "--input", "<temp-output>/image.tar", "--tag", config.build.tag];
+      process.stdout.write(formatArgvGroups([plan.argv, tarArgv, loadArgv]) + "\n");
+    }
+    return;
+  }
+
+  if (shouldUseDirectMise(platform)) {
+    const result = await buildOciImage({ config, projectRoot, printOnly: false });
+    if (result.exitCode !== 0) {
+      console.error(
+        `mise-msb build: stage "${result.failedStage}" failed; archive preserved at ${result.archivePath}`,
+      );
+      process.exit(result.exitCode);
+    }
+    console.log(`mise-msb build: loaded ${config.build.tag}`);
+    return;
+  }
+
+  const { mkdirSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const outputDir = join(process.cwd(), ".mise-msb-build", `macos-${Date.now()}`);
+  mkdirSync(outputDir, { recursive: true });
+  const plan = planMacOsBuilder({ config, projectRoot, outputDir });
+  const exit = await runMacOsBuilder(plan, false);
+  if (exit !== 0) {
+    console.error(`mise-msb build: macOS builder failed with exit ${exit}`);
+    process.exit(exit);
+  }
+  const result = await buildOciImage({
+    config,
+    projectRoot,
+    printOnly: false,
+    outputDir,
   });
-
-  console.log("📦 Loading image into microsandbox…");
-  // `msb image load` reads a tar archive from stdin (`--input <PATH>` also
-  // supported).  We pipe `docker save` so msb receives the OCI layers and
-  // tags the result with --tag.
-  execSync(
-    "docker save agent-sandbox:latest | msb image load --tag agent-sandbox:latest",
-    {
-      cwd: root,
-      stdio: "inherit",
-      shell: "/bin/sh",
-    },
-  );
-
-  console.log("✅ Build complete — agent-sandbox:latest loaded.");
+  if (result.exitCode !== 0) {
+    console.error(
+      `mise-msb build: archive/load failed; artifacts preserved at ${result.archivePath}`,
+    );
+    process.exit(result.exitCode);
+  }
+  console.log(`mise-msb build: loaded ${config.build.tag}`);
 }

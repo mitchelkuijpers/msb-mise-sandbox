@@ -1,13 +1,29 @@
 /**
- * `agent-sandbox shell <project>` — open an interactive shell.
+ * `shell` — Attach an interactive shell to a running sandbox.
  */
 
-import { shellInSandbox } from "../lib/sandbox.js";
+import { formatArgv } from "../msb/print.js";
+import type { GlobalOptions } from "./dispatch.js";
+import { applyNameOverride, resolveInvocation } from "./_shared.js";
 
-export async function shellCommand(project: string): Promise<void> {
-  console.log(`Opening shell in sandbox "${project}"…`);
-  const code = await shellInSandbox(project);
-  if (code !== 0) {
-    console.error(`Shell exited with code ${code}`);
+export async function runShellCommand(
+  global: GlobalOptions,
+  args: string[],
+): Promise<void> {
+  const { config, projectRoot, print } = await resolveInvocation(global, args);
+  const name = args[0];
+  if (name === undefined) {
+    throw new Error("shell requires a sandbox name");
   }
+  applyNameOverride(config, name, projectRoot);
+  const shellBin = config.env["SHELL"] ?? "/bin/bash";
+  const argv = ["msb", "exec", name, "--tty", "--", shellBin];
+
+  if (print) {
+    process.stdout.write(formatArgv(argv) + "\n");
+    return;
+  }
+
+  const proc = Bun.spawn({ cmd: argv, stdio: ["inherit", "inherit", "inherit"] });
+  process.exit(await proc.exited);
 }

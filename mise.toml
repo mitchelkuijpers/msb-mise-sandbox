@@ -47,5 +47,6 @@ run = "pi"
 description = "Open an interactive Bash shell"
 run = "bash"
 
-# The `scripts/install.sh` wrapper installer has been removed.
-# Use `bin/agent-sandbox` directly or symlink it into your PATH.
+[tasks.install]
+description = "Symlink the mise-msb wrapper into ~/.local/bin"
+run = "bun bin/mise-msb install"

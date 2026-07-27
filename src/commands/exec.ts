@@ -1,31 +1,38 @@
 /**
- * `agent-sandbox exec <project> [command...]` — execute a command.
+ * `exec` — Execute a single command inside a running sandbox.
  */
 
-import { execInSandbox } from "../lib/sandbox.js";
+import { formatArgv } from "../msb/print.js";
+import { LifecycleArgv } from "../msb/lifecycle.js";
+import type { GlobalOptions } from "./dispatch.js";
+import { applyNameOverride, resolveInvocation } from "./_shared.js";
 
-export async function execCommand(
-  project: string,
-  command: string[],
+export async function runExecCommand(
+  global: GlobalOptions,
+  args: string[],
 ): Promise<void> {
-  if (command.length === 0) {
-    console.error("No command specified. Usage: agent-sandbox exec <project> <command> [args...]");
-    process.exit(1);
+  const { config, projectRoot, print } = await resolveInvocation(global, args);
+  const sep = args.indexOf("--");
+  if (sep === -1) {
+    throw new Error("exec requires a `--` separator before the command");
+  }
+  const name = args[0];
+  const commandArgv = args.slice(sep + 1);
+  if (name === undefined) {
+    throw new Error("exec requires a sandbox name before `--`");
+  }
+  if (commandArgv.length === 0) {
+    throw new Error("exec requires a command after `--`");
+  }
+  applyNameOverride(config, name, projectRoot);
+
+  const argv = LifecycleArgv.exec(name, commandArgv);
+
+  if (print) {
+    process.stdout.write(formatArgv(argv) + "\n");
+    return;
   }
 
-  const cmd = command[0];
-  const args = command.slice(1);
-
-  const result = await execInSandbox(project, cmd, args);
-
-  // Print stdout (TTY mode merges stdout/stderr into stdout).
-  const out = result.stdout();
-  if (out) process.stdout.write(out);
-
-  const err = result.stderr();
-  if (err) process.stderr.write(err);
-
-  if (!result.success) {
-    process.exitCode = result.code;
-  }
+  const proc = Bun.spawn({ cmd: argv, stdio: ["inherit", "inherit", "inherit"] });
+  process.exit(await proc.exited);
 }

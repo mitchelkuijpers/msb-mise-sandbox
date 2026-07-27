@@ -1,31 +1,34 @@
 /**
- * `agent-sandbox create <project>` — create a sandbox from a registered
- * project config.
+ * `create` — Create a sandbox from the merged config.
  */
 
-import { Sandbox } from "microsandbox";
-import { loadProject } from "../lib/config.js";
-import { createSandbox, listSandboxes, startSandbox } from "../lib/sandbox.js";
+import { formatArgv } from "../msb/print.js";
+import { LifecycleArgv } from "../msb/lifecycle.js";
+import type { GlobalOptions } from "./dispatch.js";
+import { applyNameOverride, resolveInvocation } from "./_shared.js";
 
-export async function createCommand(project: string): Promise<void> {
-  // Check if a sandbox with this name already exists.
-  try {
-    await Sandbox.get(project);
-    console.error(`A sandbox named "${project}" already exists.`);
-    console.error("Use `agent-sandbox start` or `agent-sandbox remove` first.");
-    process.exit(1);
-  } catch {
-    // Not found — expected. Proceed.
+export async function runCreateCommand(
+  global: GlobalOptions,
+  args: string[],
+): Promise<void> {
+  const { config, projectRoot, print } = await resolveInvocation(global, args);
+  const name = args[0];
+  if (name === undefined) {
+    throw new Error("create requires a sandbox name");
+  }
+  applyNameOverride(config, name, projectRoot);
+
+  const argv = LifecycleArgv.create({
+    image: config.build.tag,
+    name,
+    config,
+  });
+
+  if (print) {
+    process.stdout.write(formatArgv(argv) + "\n");
+    return;
   }
 
-  const config = loadProject(project);
-
-  console.log(`Creating sandbox "${project}"…`);
-  const sandbox = await createSandbox(project, config);
-  const entry = (await listSandboxes()).find((item) => item.name === project);
-  if (!entry || entry.status.toLowerCase() !== "running") {
-    await startSandbox(project);
-  }
-
-  console.log(`✅ Sandbox "${sandbox.name}" created and started.`);
+  const proc = Bun.spawn({ cmd: argv, stdio: ["inherit", "inherit", "inherit"] });
+  process.exit(await proc.exited);
 }

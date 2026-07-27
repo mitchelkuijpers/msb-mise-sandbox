@@ -1,181 +1,116 @@
-# Security Model
+# Security
 
-## MicroVM Isolation
+## Secret Configuration
 
-The agent runs in a lightweight microVM, not a shared-kernel container.
-This provides:
+The wrapper's secret configuration contains **references only** — never
+values. Each entry in `[secrets.<name>]` declares:
 
-- **No kernel sharing** — the microVM runs its own Linux kernel, isolated
-  from the host.
-- **No host socket access** — no Podman, Docker, or any host sockets are
-  mounted inside the microVM.
-- **No privilege escalation** — root inside the microVM is mapped to the
-  host user (via microsandbox's rootless mode). The agent has no more
-  privileges than your user account.
-- **No new privileges** — the `no-new-privileges` restriction prevents
-  setuid/setgid escalation inside the microVM.
+- `from` — a host environment variable name (e.g. `GITLAB_TOKEN`).
+- `hosts` — a list of allowed destination hosts.
 
-## Writable Workspace Mount
+The wrapper:
 
-The project directory is bind-mounted at `/workspace` and is writable. The
-agent can modify, create, or delete project files. This is necessary for
-the agent to do its job, but it means a buggy or malicious agent can damage
-your project. Mitigations:
+1. **Verifies presence, never reads value.** Before generating any `msb`
+   command, the wrapper checks that `from` is set in the host
+   environment without copying its value into wrapper state.
+2. **Emits source-based secret arguments.** Each secret produces one
+   `--secret FROM@HOST` argument per allowed host. `msb` reads the value
+   from its inherited host environment at sandbox start time.
+3. **Refuses inline values.** `msb` rejects `FROM=VALUE@HOST` syntax; the
+   wrapper never attempts to construct it.
 
-- Use Git for version control (commit before running the agent).
-- Use disposable copies of sensitive data.
-
-## Secret Placeholder Mechanism
-
-The most important security property: **real secret values never enter the
-microVM.**
-
-Secrets are configured in the project registry:
-
-```json
-{
-  "secrets": [
-    {
-      "env": "GITLAB_TOKEN",
-      "from": "env:GITLAB_TOKEN",
-      "allow": "gitlab.com"
-    }
-  ]
-}
+```toml
+[secrets.GITLAB_TOKEN]
+from = "GITLAB_TOKEN"
+hosts = ["gitlab.com"]
 ```
 
-How it works:
+emits:
 
-1. The CLI reads the real value from the host environment variable at
-   sandbox-creation time.
-2. Inside the microVM, the environment variable is set to a **placeholder
-   string**: `$MSB_GITLAB_TOKEN`. The agent sees only this placeholder.
-3. The real value is registered with the microsandbox `NetworkBuilder`,
-   which enables TLS interception.
-4. When the agent makes an outbound TLS connection to an allowed host
-   (`gitlab.com`), the microsandbox runtime intercepts the TLS stream and
-   substitutes the placeholder with the real value.
-5. Connections to non-allowed hosts are blocked — the placeholder is never
-   resolved there.
+```
+msb create ... --secret GITLAB_TOKEN@gitlab.com ...
+```
 
-This means:
-
-- An agent that inspects its environment variables sees only placeholders,
-  not real tokens.
-- An agent that tries to exfiltrate a placeholder to a non-allowed host
-  sends a meaningless string.
-- An agent that connects to an allowed host gets the real token
-  transparently.
-
-### Violation Policy
-
-When a secret placeholder would be sent to a non-allowed host, the
-microsandbox runtime can take one of three actions, configured via
-`onSecretViolation`:
-
-| Policy | Behavior |
-|---|---|
-| `block` (default) | Request is blocked, sandbox continues |
-| `block-and-log` | Request is blocked and a violation is logged |
-| `block-and-terminate` | Sandbox is terminated immediately |
-
-### Secret Source Format
-
-Secrets are resolved from the host environment. The `from` field must be in
-the format `env:VARIABLE_NAME`. Only `env:` sources are supported currently.
+The microsandbox runtime substitutes the real value into TLS connections
+to `gitlab.com` only. Connections to other hosts never see the secret.
 
 ## Network Policy
 
-The default egress policy is **deny** — all outbound traffic is blocked
-unless explicitly allowed. Allow rules are per-host, per-protocol, per-port:
+The default egress policy is `allow` — sandboxes can reach any
+destination unless the project explicitly opts into a deny-by-default
+allowlist via `network.defaultEgress = "deny"`.
 
-- `gitlab.com:tcp:443`
-- `*.openai.com:tcp:443`
-- `registry.npmjs.org:tcp:443`
+Each allow entry uses `<host>:<protocol>:<port>` syntax:
 
-DNS resolution is automatically allowed when the default policy is `deny`.
-
-## Nested Containers (Docker-in-sandbox)
-
-When `docker.enabled` is true, the agent can run a real `dockerd` inside the
-microVM and build/run nested containers. This stays inside the microVM
-isolation boundary:
-
-- **No host socket is mounted.** The daemon runs entirely inside the
-  microVM with its own kernel — the "no host socket access" property above
-  is unchanged. Host Docker/Podman sockets are never mounted; the nested
-  engine is a separate, in-microVM `dockerd`.
-- **Nested `--privileged` / `--network host` containers are still bounded
-  by the microVM.** A nested container that requests `--privileged` gains
-  privileges *inside the microVM*, not on the host. It is still confined by
-  the microVM's kernel, its CPU/memory limits, and — critically — the
-  deny-by-default egress policy. `--network host` inside the microVM uses
-  the microVM's network namespace, not the host's.
-- **Registry egress is explicit.** `docker pull` is subject to the same
-  `network.allow` rules as any other outbound traffic; `docker.enabled`
-  does **not** broaden egress.
-
-Security layers:
-
-1. **Isolation**: microVM, no kernel sharing, no socket mounts.
-2. **Secrets at boundary**: real values never enter microVM.
-3. **Network control**: deny-by-default egress with explicit allow rules.
-4. **Resource limits**: CPU and memory limits prevent resource exhaustion.
-5. **Credential isolation**: no host credential mounts, secrets via TLS
-   boundary only.
-
-## Project Scoping Is Enforced by GitLab Token Scope
-
-The sandbox does not enforce project-level access restrictions. It holds
-and forwards the GitLab token you provide. **Project scoping is the GitLab
-token's job** — create tokens with the minimum required scope for each
-project.
-
-This means:
-
-- If you use a token with `api` scope, the agent can access any project or
-  group that token has access to.
-- If you use a token with `read_repository` scope for one project, the
-  agent is limited to that project.
-- The sandbox merely stores and injects the token. It does not add or
-  remove permissions.
-
-## Credential Handling
-
-The sandbox never mounts host credential directories (`~/.ssh`, `~/.aws`,
-`~/.config`, etc.). Instead, secrets are injected via the TLS-boundary
-placeholder mechanism described above.
-
-For interactive authentication inside the sandbox:
-
-```bash
-agent-sandbox shell my-project
-# Inside the microVM:
-opencode auth
+```toml
+[network]
+defaultEgress = "deny"
+allow = [
+  "github.com:tcp:443",
+  "*.openai.com:tcp:443",
+  "registry.npmjs.org:tcp:443",
+]
 ```
 
-Credentials stored inside the microVM persist across stop/start cycles but
-are lost when the sandbox is removed.
+The wrapper translates each rule to `--net-rule allow@<host>:<proto>:<port>`,
+sorted for determinism.
 
-## Risk Summary
+Secret hosts automatically receive network access: when a secret allows
+`api.example.com`, an equivalent `--net-rule allow@api.example.com:tcp:443`
+is added unless the project already specifies a stricter rule.
 
-| Risk | Mitigation |
-|---|---|
-| Agent modifies project files | Use Git, commit before running |
-| Agent exfiltrates data | Network policy limits egress |
-| Agent steals API tokens | Tokens never enter microVM (placeholder mechanism) |
-| Agent escalates privileges | MicroVM isolation, no-new-privileges |
-| Agent consumes all resources | CPU and memory limits |
-| Agent accesses other projects | GitLab token scope controls access |
+## Published Ports
 
-## What the Sandbox Does NOT Do
+Published ports default to loopback (`127.0.0.1`) — exposing a port to
+all interfaces requires explicit opt-in:
 
-- It does not sandbox network traffic after it leaves the microVM. An agent
-  that gains code execution on an allowed host can exfiltrate data through
-  that host.
-- It does not prevent the agent from writing persistent backdoors into the
-  workspace or the image layer.
-- It does not enforce project boundaries — that is the token's
-  responsibility.
-- It does not provide a credential proxy or egress proxy beyond the
-  TLS-intercepting placeholder mechanism.
+```toml
+[ports.dns]
+hostPort = 5353
+guestPort = 53
+protocol = "udp"
+bind = "0.0.0.0"   # explicit
+```
+
+The wrapper emits `0.0.0.0:5353:53/udp` (or `127.0.0.1:8080:8080` when
+bind is omitted).
+
+## Committed Secret References
+
+It is safe to commit `.sandbox.toml` files containing secret references.
+The references name environment variables (e.g. `GITLAB_TOKEN`) and
+allowed hosts (e.g. `gitlab.com`) but never values. Someone with access
+to the project repo sees which environments are expected but not the
+secrets themselves.
+
+## Print Mode Safety
+
+`--print` outputs `msb` argv arrays formatted for copy-paste. Secret
+arguments contain only `FROM@HOST` (source variable name + allowed
+host) — never the secret value. There is no `--no-redact` escape hatch.
+
+## Installation Safety
+
+The wrapper's `install` command creates a symlink at
+`~/.local/bin/mise-msb` pointing to the repository entry point. It:
+
+- Does not edit `~/.zshrc`, `~/.bashrc`, `~/.profile`, or any other
+  dotfile.
+- Refuses to overwrite an existing symlink that points elsewhere unless
+  `--force` is supplied.
+- Refuses to recursively remove a directory at the destination, even
+  with `--force`.
+- Prints a non-fatal PATH hint when `~/.local/bin` is not on `$PATH`.
+
+## Threat Model Notes
+
+- **Root inside the microVM is not host root.** The agent has no more
+  privileges than the user account that started `msb`.
+- **Writable workspace mounts are dangerous.** The agent can modify or
+  delete files in your project directory. Use Git for version control.
+- **Network policy is not a security boundary against malicious agents.**
+  An agent that can execute arbitrary code can still exfiltrate data
+  through allowed hosts.
+- **The wrapper has zero third-party dependencies.** It uses Bun's built-in
+  TOML parser and subprocess API. There is no JavaScript package supply
+  chain to audit.

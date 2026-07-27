@@ -154,28 +154,7 @@ export async function createSandbox(
     sb.env(secret.env, `$MSB_${secret.env}`);
   }
 
-  // Published ports (host → guest forwarding)
-  // Per-entry defaults are resolved by parsePortSpec (guestPort=hostPort,
-  // protocol="tcp", bind="127.0.0.1"). The loopback default keeps published
-  // ports reachable from the host without exposing them on the LAN.
-  for (const entry of cfg.ports) {
-    const p = parsePortSpec(entry);
-    if (p.protocol === "udp") {
-      if (p.bind === DEFAULT_PORT_BIND) {
-        sb.portUdp(p.hostPort, p.guestPort);
-      } else {
-        sb.portUdpBind(p.bind, p.hostPort, p.guestPort);
-      }
-    } else {
-      if (p.bind === DEFAULT_PORT_BIND) {
-        sb.port(p.hostPort, p.guestPort);
-      } else {
-        sb.portBind(p.bind, p.hostPort, p.guestPort);
-      }
-    }
-  }
-
-  // Network (policy + secrets + TLS)
+  // Network (policy + secrets + TLS + published ports)
   sb.network((nb: any) => {
     // 1. Egress policy from network.allow rules
     const policy = buildNetworkPolicy({
@@ -187,6 +166,29 @@ export async function createSandbox(
     // 2. Secrets (v0.6.6 workaround — registered on NetworkBuilder)
     if (cfg.secrets.length > 0) {
       applySecrets(nb, cfg.secrets, cfg.onSecretViolation);
+    }
+
+    // 3. Published ports (host → guest forwarding). Per-entry defaults are
+    // resolved by parsePortSpec (guestPort=hostPort, protocol="tcp",
+    // bind="127.0.0.1"). The loopback default keeps published ports reachable
+    // from the host without exposing them on the LAN. The SDK serializes port
+    // forwarding on the NetworkBuilder, not the SandboxBuilder, so calls
+    // happen here rather than on `sb.port(...)`.
+    for (const entry of cfg.ports) {
+      const p = parsePortSpec(entry);
+      if (p.protocol === "udp") {
+        if (p.bind === DEFAULT_PORT_BIND) {
+          nb.portUdp(p.hostPort, p.guestPort);
+        } else {
+          nb.portUdpBind(p.bind, p.hostPort, p.guestPort);
+        }
+      } else {
+        if (p.bind === DEFAULT_PORT_BIND) {
+          nb.port(p.hostPort, p.guestPort);
+        } else {
+          nb.portBind(p.bind, p.hostPort, p.guestPort);
+        }
+      }
     }
 
     return nb;

@@ -27,17 +27,32 @@ vi.mock("microsandbox", () => {
         return sb;
       },
       env(k: string, v: string) { calls.push(["env", k, v]); return sb; },
-      port(host: number, guest: number) { calls.push(["port", host, guest]); return sb; },
-      portBind(bind: string, host: number, guest: number) { calls.push(["portBind", bind, host, guest]); return sb; },
-      portUdp(host: number, guest: number) { calls.push(["portUdp", host, guest]); return sb; },
-      portUdpBind(bind: string, host: number, guest: number) { calls.push(["portUdpBind", bind, host, guest]); return sb; },
       network(cb: (nb: any) => unknown) { networkCbs.push(cb); calls.push(["network"]); return sb; },
       async create() {
-        return { name: "mock", calls, volumeCbs, networkCbs };
+        // Invoke the recorded network callbacks so the production code's
+        // nb.port(...) calls are exercised against the recording nb below.
+        const { nb, nbCalls } = makeNetworkBuilder();
+        for (const cb of networkCbs) cb(nb);
+        return { name: "mock", calls, volumeCbs, networkCbs, nbCalls };
       },
     };
     return sb;
   }
+
+  function makeNetworkBuilder() {
+    const nbCalls: Array<[string, ...unknown[]]> = [];
+    const nb: any = {
+      policy(p: any) { nbCalls.push(["policy", p]); return nb; },
+      port(host: number, guest: number) { nbCalls.push(["port", host, guest]); return nb; },
+      portBind(bind: string, host: number, guest: number) { nbCalls.push(["portBind", bind, host, guest]); return nb; },
+      portUdp(host: number, guest: number) { nbCalls.push(["portUdp", host, guest]); return nb; },
+      portUdpBind(bind: string, host: number, guest: number) { nbCalls.push(["portUdpBind", bind, host, guest]); return nb; },
+      secret(cb: any) { nbCalls.push(["secret"]); return nb; },
+      onSecretViolation() { return nb; },
+    };
+    return { nb, nbCalls };
+  }
+
   return { Sandbox: { builder: (_name: string) => makeBuilder() } };
 });
 
@@ -150,7 +165,7 @@ async function portCalls(
   cfg: ProjectConfig,
 ): Promise<Array<[string, ...unknown[]]>> {
   const result: any = await createSandbox("proj", cfg);
-  return (result.calls as Array<[string, ...unknown[]]>).filter(
+  return (result.nbCalls as Array<[string, ...unknown[]]>).filter(
     ([op]) =>
       op === "port" ||
       op === "portBind" ||

@@ -44,6 +44,14 @@ export interface ProjectConfig {
   docker?: DockerConfig;
 
   /**
+   * Host→guest port publishing entries. Each entry instructs the runtime to
+   * forward a host port into the guest microVM. Per-entry defaults (guest
+   * port = host port, protocol = "tcp", bind = "127.0.0.1") are resolved at
+   * the builder call site, not here.
+   */
+  ports?: PortSpec[];
+
+  /**
    * Action to take when a secret placeholder would be sent to a
    * non-allowed host.
    *
@@ -135,6 +143,27 @@ export interface DockerConfig {
   dataVolumeSize?: string;
 }
 
+/**
+ * Published host→guest port forwarding entry.
+ *
+ * Per-entry defaults are resolved by `parsePortSpec` at the builder call
+ * site (in `src/lib/network.ts`): `guestPort` defaults to `hostPort`,
+ * `protocol` defaults to `"tcp"`, `bind` defaults to `"127.0.0.1"`.
+ */
+export interface PortSpec {
+  /** Host-side port (1-65535). */
+  hostPort: number;
+
+  /** Guest-side port (1-65535, defaults to `hostPort`). */
+  guestPort?: number;
+
+  /** `"tcp"` or `"udp"` (defaults to `"tcp"`). */
+  protocol?: "tcp" | "udp";
+
+  /** Host bind address (defaults to `"127.0.0.1"` for loopback-only). */
+  bind?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Enums / Literal Unions
 // ---------------------------------------------------------------------------
@@ -156,6 +185,7 @@ export const DEFAULTS = {
   mounts: { workspace: "/workspace", root: "/root" } as MountConfig,
   network: { defaultEgress: "deny" as EgressPolicy },
   docker: { enabled: false, dataVolumeSize: "10G" } as DockerConfig,
+  ports: [] as PortSpec[],
   onSecretViolation: "block" as SecretViolationPolicy,
 };
 
@@ -188,6 +218,7 @@ export function applyDefaults(config: ProjectConfig): Required<ProjectConfig> {
     secrets: config.secrets ?? [],
     env: config.env ?? {},
     docker: { ...DEFAULTS.docker, ...config.docker },
+    ports: config.ports ?? [],
     onSecretViolation:
       config.onSecretViolation ?? DEFAULTS.onSecretViolation,
   } as Required<ProjectConfig>;

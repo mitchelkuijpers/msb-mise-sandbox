@@ -2,7 +2,7 @@
  * Unit tests for src/lib/sandbox.ts — helper functions.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi } from "bun:test";
 import { parseMemoryMib, createSandbox } from "../src/lib/sandbox.js";
 import type { ProjectConfig } from "../src/types.js";
 
@@ -27,6 +27,10 @@ vi.mock("microsandbox", () => {
         return sb;
       },
       env(k: string, v: string) { calls.push(["env", k, v]); return sb; },
+      port(host: number, guest: number) { calls.push(["port", host, guest]); return sb; },
+      portBind(bind: string, host: number, guest: number) { calls.push(["portBind", bind, host, guest]); return sb; },
+      portUdp(host: number, guest: number) { calls.push(["portUdp", host, guest]); return sb; },
+      portUdpBind(bind: string, host: number, guest: number) { calls.push(["portUdpBind", bind, host, guest]); return sb; },
       network(cb: (nb: any) => unknown) { networkCbs.push(cb); calls.push(["network"]); return sb; },
       async create() {
         return { name: "mock", calls, volumeCbs, networkCbs };
@@ -136,5 +140,72 @@ describe("createSandbox docker support", () => {
       }),
     );
     expect(args).toEqual(["proj-docker-data", "ensure-exists", "disk", 10240]);
+  });
+});
+
+/**
+ * Run createSandbox and return only the recorded port-related builder calls.
+ */
+async function portCalls(
+  cfg: ProjectConfig,
+): Promise<Array<[string, ...unknown[]]>> {
+  const result: any = await createSandbox("proj", cfg);
+  return (result.calls as Array<[string, ...unknown[]]>).filter(
+    ([op]) =>
+      op === "port" ||
+      op === "portBind" ||
+      op === "portUdp" ||
+      op === "portUdpBind",
+  );
+}
+
+describe("createSandbox ports", () => {
+  it("defaults to tcp/loopback when only hostPort is given", async () => {
+    const calls = await portCalls(
+      baseConfig({ ports: [{ hostPort: 8080 }] }),
+    );
+    expect(calls).toEqual([["port", 8080, 8080]]);
+  });
+
+  it("uses portBind when an explicit bind is given for tcp", async () => {
+    const calls = await portCalls(
+      baseConfig({
+        ports: [{ hostPort: 80, guestPort: 8080, bind: "0.0.0.0" }],
+      }),
+    );
+    expect(calls).toEqual([["portBind", "0.0.0.0", 80, 8080]]);
+  });
+
+  it("defaults to udp/loopback when only hostPort + protocol udp is given", async () => {
+    const calls = await portCalls(
+      baseConfig({ ports: [{ hostPort: 5353, protocol: "udp" }] }),
+    );
+    expect(calls).toEqual([["portUdp", 5353, 5353]]);
+  });
+
+  it("uses portUdpBind when udp + explicit bind are given", async () => {
+    const calls = await portCalls(
+      baseConfig({
+        ports: [{ hostPort: 5353, protocol: "udp", bind: "0.0.0.0" }],
+      }),
+    );
+    expect(calls).toEqual([["portUdpBind", "0.0.0.0", 5353, 5353]]);
+  });
+
+  it("issues no port calls when ports is empty", async () => {
+    const calls = await portCalls(baseConfig({ ports: [] }));
+    expect(calls).toEqual([]);
+  });
+
+  it("issues no port calls when ports is omitted", async () => {
+    const calls = await portCalls(baseConfig());
+    expect(calls).toEqual([]);
+  });
+
+  it("treats an explicit 127.0.0.1 bind as loopback (uses port, not portBind)", async () => {
+    const calls = await portCalls(
+      baseConfig({ ports: [{ hostPort: 8080, bind: "127.0.0.1" }] }),
+    );
+    expect(calls).toEqual([["port", 8080, 8080]]);
   });
 });

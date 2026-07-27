@@ -2,8 +2,8 @@
  * Unit tests for src/lib/network.ts — network rule parser.
  */
 
-import { describe, it, expect } from "vitest";
-import { parseAllowRule } from "../src/lib/network.js";
+import { describe, it, expect } from "bun:test";
+import { parseAllowRule, parsePortSpec } from "../src/lib/network.js";
 
 describe("parseAllowRule", () => {
   it("parses a basic tcp rule", () => {
@@ -53,5 +53,82 @@ describe("parseAllowRule", () => {
 
   it("rejects non-integer port", () => {
     expect(() => parseAllowRule("host:tcp:22.5")).toThrow(/must be an integer/);
+  });
+});
+
+describe("parsePortSpec", () => {
+  it("applies defaults for a minimal spec", () => {
+    const p = parsePortSpec({ hostPort: 8080 });
+    expect(p).toEqual({
+      hostPort: 8080,
+      guestPort: 8080,
+      protocol: "tcp",
+      bind: "127.0.0.1",
+    });
+  });
+
+  it("parses an explicit udp port", () => {
+    const p = parsePortSpec({ hostPort: 5353, protocol: "udp" });
+    expect(p.protocol).toBe("udp");
+    expect(p.hostPort).toBe(5353);
+    expect(p.guestPort).toBe(5353);
+    expect(p.bind).toBe("127.0.0.1");
+  });
+
+  it("honors an explicit bind of 0.0.0.0", () => {
+    const p = parsePortSpec({ hostPort: 80, bind: "0.0.0.0" });
+    expect(p.bind).toBe("0.0.0.0");
+    expect(p.protocol).toBe("tcp");
+  });
+
+  it("honors an explicit guest port remap", () => {
+    const p = parsePortSpec({ hostPort: 80, guestPort: 8080 });
+    expect(p.hostPort).toBe(80);
+    expect(p.guestPort).toBe(8080);
+  });
+
+  it("rejects hostPort 0", () => {
+    expect(() => parsePortSpec({ hostPort: 0 })).toThrow(/must be an integer 1-65535/);
+  });
+
+  it("rejects hostPort > 65535", () => {
+    expect(() => parsePortSpec({ hostPort: 65536 })).toThrow(/must be an integer 1-65535/);
+  });
+
+  it("rejects non-integer hostPort", () => {
+    expect(() => parsePortSpec({ hostPort: 22.5 })).toThrow(/must be an integer 1-65535/);
+  });
+
+  it("rejects non-numeric hostPort", () => {
+    expect(() =>
+      parsePortSpec({ hostPort: "8080" as unknown as number }),
+    ).toThrow(/must be an integer 1-65535/);
+  });
+
+  it("rejects missing hostPort", () => {
+    expect(() => parsePortSpec({} as { hostPort: number })).toThrow(
+      /must be an integer 1-65535/,
+    );
+  });
+
+  it("rejects invalid guestPort", () => {
+    expect(() =>
+      parsePortSpec({ hostPort: 80, guestPort: 0 }),
+    ).toThrow(/must be an integer 1-65535/);
+  });
+
+  it("rejects invalid protocol", () => {
+    expect(() =>
+      parsePortSpec({ hostPort: 80, protocol: "sctp" as "tcp" }),
+    ).toThrow(/protocol must be "tcp" or "udp"/);
+  });
+
+  it("rejects non-object input", () => {
+    expect(() => parsePortSpec(null as unknown as { hostPort: number })).toThrow(
+      /expected an object/,
+    );
+    expect(() =>
+      parsePortSpec("nope" as unknown as { hostPort: number }),
+    ).toThrow(/expected an object/);
   });
 });

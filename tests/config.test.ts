@@ -9,7 +9,7 @@
  * - Registry write/update preserving existing entries
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -235,7 +235,7 @@ function withTempHome(fn: () => void): void {
 //
 // Actually the cleanest approach: use vi.mock to patch os.homedir.
 
-import { vi } from "vitest";
+import { vi } from "bun:test";
 
 describe("file operations", () => {
   beforeEach(() => {

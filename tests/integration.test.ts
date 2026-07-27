@@ -38,7 +38,7 @@
  *   completes quickly even when the packet is dropped by the policy.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import {
   Sandbox,
   Rule,

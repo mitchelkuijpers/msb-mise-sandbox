@@ -7,7 +7,7 @@
  * - doctor.ts       (runChecks, printResults)
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { buildProjectConfig } from "../src/commands/project-add.js";
 import { buildProjectRows } from "../src/commands/project-list.js";
 import { runChecks, printResults } from "../src/commands/doctor.js";

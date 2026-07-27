@@ -18,7 +18,7 @@ import {
   type ExecOutput,
 } from "microsandbox";
 import type { ProjectConfig } from "../types.js";
-import { buildNetworkPolicy } from "./network.js";
+import { buildNetworkPolicy, parsePortSpec, DEFAULT_PORT_BIND } from "./network.js";
 import { applySecrets } from "./secrets.js";
 
 const execFileAsync = promisify(execFile);
@@ -152,6 +152,27 @@ export async function createSandbox(
   // The real secret value is registered on the NetworkBuilder below.
   for (const secret of cfg.secrets) {
     sb.env(secret.env, `$MSB_${secret.env}`);
+  }
+
+  // Published ports (host → guest forwarding)
+  // Per-entry defaults are resolved by parsePortSpec (guestPort=hostPort,
+  // protocol="tcp", bind="127.0.0.1"). The loopback default keeps published
+  // ports reachable from the host without exposing them on the LAN.
+  for (const entry of cfg.ports) {
+    const p = parsePortSpec(entry);
+    if (p.protocol === "udp") {
+      if (p.bind === DEFAULT_PORT_BIND) {
+        sb.portUdp(p.hostPort, p.guestPort);
+      } else {
+        sb.portUdpBind(p.bind, p.hostPort, p.guestPort);
+      }
+    } else {
+      if (p.bind === DEFAULT_PORT_BIND) {
+        sb.port(p.hostPort, p.guestPort);
+      } else {
+        sb.portBind(p.bind, p.hostPort, p.guestPort);
+      }
+    }
   }
 
   // Network (policy + secrets + TLS)

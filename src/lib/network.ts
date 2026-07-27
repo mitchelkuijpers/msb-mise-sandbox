@@ -20,7 +20,7 @@ import {
   PortRange,
 } from "microsandbox";
 import type { NetworkPolicy } from "microsandbox";
-import type { NetworkConfig } from "../types.js";
+import type { NetworkConfig, PortSpec } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Parsed rule
@@ -31,6 +31,17 @@ export interface ParsedAllowRule {
   host: string;
   protocol: "tcp" | "udp";
   port: number;
+}
+
+/** Default bind address for published ports (loopback only). */
+export const DEFAULT_PORT_BIND = "127.0.0.1";
+
+/** Normalized port spec with all defaults resolved. */
+export interface ParsedPortSpec {
+  hostPort: number;
+  guestPort: number;
+  protocol: "tcp" | "udp";
+  bind: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +76,62 @@ export function parseAllowRule(rule: string): ParsedAllowRule {
   }
 
   return { host, protocol: protocolStr, port };
+}
+
+// ---------------------------------------------------------------------------
+// Port spec parser
+// ---------------------------------------------------------------------------
+
+function validatePortNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 65535) {
+    throw new Error(
+      `Invalid port spec: ${field} must be an integer 1-65535 (got ${JSON.stringify(value)})`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Parse and normalize a single `PortSpec` entry. Defaults are applied:
+ *   - `guestPort` → `hostPort`
+ *   - `protocol`  → `"tcp"`
+ *   - `bind`      → `"127.0.0.1"`
+ *
+ * Throws on missing/invalid `hostPort`, invalid `guestPort` or `protocol`.
+ */
+export function parsePortSpec(spec: PortSpec): ParsedPortSpec {
+  if (spec === null || typeof spec !== "object") {
+    throw new Error(
+      `Invalid port spec: expected an object (got ${typeof spec})`,
+    );
+  }
+
+  const hostPort = validatePortNumber(
+    (spec as { hostPort?: unknown }).hostPort,
+    "hostPort",
+  );
+
+  let guestPort = hostPort;
+  if ((spec as { guestPort?: unknown }).guestPort !== undefined) {
+    guestPort = validatePortNumber(
+      (spec as { guestPort?: unknown }).guestPort,
+      "guestPort",
+    );
+  }
+
+  const protocol = (spec as { protocol?: unknown }).protocol;
+  if (protocol !== undefined && protocol !== "tcp" && protocol !== "udp") {
+    throw new Error(
+      `Invalid port spec: protocol must be "tcp" or "udp" (got ${JSON.stringify(protocol)})`,
+    );
+  }
+
+  const bind =
+    (spec as { bind?: unknown }).bind !== undefined
+      ? String((spec as { bind?: unknown }).bind)
+      : DEFAULT_PORT_BIND;
+
+  return { hostPort, guestPort, protocol: protocol ?? "tcp", bind };
 }
 
 // ---------------------------------------------------------------------------

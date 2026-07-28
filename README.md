@@ -32,6 +32,11 @@ registry. This release replaces both with a thin wrapper:
   stay in the host environment.
 - **Generic lifecycle commands** — `build`, `create`, `run`, `shell`,
   `exec`, `start`, `stop`, `remove`, `list`.
+- **Optional personal Containerfile base** — add a `Containerfile` at
+  `~/.config/mise-msb/image/` to customize the base image; the wrapper
+  builds it locally and hands it to `mise oci build` through a temporary
+  loopback registry (never published externally). The default path stays
+  Docker-free.
 - **Idempotent install** — `mise-msb install [--force]` symlinks the
   wrapper into `~/.local/bin` without editing shell startup files.
 

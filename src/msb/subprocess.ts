@@ -27,6 +27,17 @@ export interface SpawnResult {
   printedArgv?: string[];
 }
 
+/** Result of a stdout-capturing subprocess. */
+export interface CaptureResult {
+  exitCode: number;
+  /** Captured stdout (UTF-8, trailing whitespace trimmed). */
+  stdout: string;
+  /** Captured stderr (UTF-8, untrimmed). */
+  stderr: string;
+  /** For print-only mode, this is the argv that would have been run. */
+  printedArgv?: string[];
+}
+
 const DEFAULT_INHERIT = true;
 
 function stdioFor(inherit: boolean): ["inherit", "inherit", "inherit"] | ["pipe", "pipe", "pipe"] {
@@ -77,6 +88,53 @@ export function runSync(argv: string[], options: SpawnOptions = {}): SpawnResult
     stdio: stdioFor(inherit),
   });
   return { exitCode: proc.exitCode };
+}
+
+/**
+ * Run a subprocess and capture stdout/stderr. Used for short probes such as
+ * `mise --version` and `docker port <name>`. In `printOnly` mode no process
+ * is spawned — the argv is returned as `printedArgv` with exit 0.
+ */
+export async function runCapture(argv: string[], options: SpawnOptions = {}): Promise<CaptureResult> {
+  if (options.printOnly) {
+    return { exitCode: 0, stdout: "", stderr: "", printedArgv: argv };
+  }
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...(options.env ?? {}),
+  };
+  const proc = Bun.spawn({
+    cmd: argv,
+    cwd: options.cwd,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  const exitCode = await proc.exited;
+  return { exitCode, stdout: stdout.trim(), stderr };
+}
+
+/** Synchronous stdout-capturing variant of {@link runCapture}. */
+export function runCaptureSync(argv: string[], options: SpawnOptions = {}): CaptureResult {
+  if (options.printOnly) {
+    return { exitCode: 0, stdout: "", stderr: "", printedArgv: argv };
+  }
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...(options.env ?? {}),
+  };
+  const proc = Bun.spawnSync({
+    cmd: argv,
+    cwd: options.cwd,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const stdout = proc.stdout.toString("utf8").trim();
+  const stderr = proc.stderr.toString("utf8");
+  return { exitCode: proc.exitCode, stdout, stderr };
 }
 
 /**

@@ -46,6 +46,13 @@ design and verified by unit tests in `tests/merge.test.ts`.
 
 ## Build Pipeline
 
+The pipeline is split into a platform-specific **layout-production** stage
+(`mise oci build` runs exactly once) and shared **archive + load** stages.
+When an optional personal Containerfile is present, a custom-base preflight
+and a temporary loopback registry hand a locally built base to mise.
+
+### Default path (no personal Containerfile) — Docker-free
+
 ```
         ┌────────────────────────────────────┐
         │ Linux host                         │
@@ -70,6 +77,52 @@ design and verified by unit tests in `tests/merge.test.ts`.
         │     --tag <tag>                    │
         └────────────────────────────────────┘
 ```
+
+### Custom-base path (personal Containerfile present) — opt-in Docker
+
+```
+        ┌────────────────────────────────────┐
+        │ Preflight: validate the Linux mise │
+        │ that will run mise oci build        │
+        │   Linux : host `mise --version`     │
+        │   macOS : `msb run <builder> --     │
+        │            mise --version`          │
+        │ (requires mise >= 2026.7.12)        │
+        └────────────────────────────────────┘
+                          ↓
+        ┌────────────────────────────────────┐
+        │ docker run -d --name <reg> \       │
+        │   -p 127.0.0.1::5000 registry:2     │  ← loopback only, dynamic port
+        │ docker port <reg> 5000             │  ← discover <port>
+        └────────────────────────────────────┘
+                          ↓
+        ┌────────────────────────────────────┐
+        │ docker build -f <Containerfile> \  │  ← context = ~/.config/mise-msb/image
+        │   -t localhost:<port>/mise-msb/    │
+        │       base:<build-id> <ctx>        │
+        │ docker push localhost:<port>/...  │  ← local only, never external
+        └────────────────────────────────────┘
+                          ↓
+        ┌────────────────────────────────────┐
+        │ mise oci build --from <base-ref>   │  ← base-ref is platform-specific:
+        │   --tag <tag> --output <layout>    │     Linux : localhost:<port>/...
+        │ (Linux direct, or macOS builder VM)│     macOS : host.microsandbox.internal:<port>/...
+        └────────────────────────────────────┘
+                          ↓
+        ┌────────────────────────────────────┐
+        │ tar -C <layout> -cf <archive> .    │
+        │ msb image load --input <archive> \│
+        │     --tag <tag>                    │
+        └────────────────────────────────────┘
+                          ↓
+        ┌────────────────────────────────────┐
+        │ docker rm -f <reg>  (always)       │  ← finally-style cleanup
+        └────────────────────────────────────┘
+```
+
+On macOS the builder VM receives `MISE_OCI_INSECURE_REGISTRIES=host.microsandbox.internal:<port>`
+and a port-scoped `--net-rule allow@host.microsandbox.internal:tcp:<port>` so
+the guest can reach the host registry over HTTP for exactly that port.
 
 The macOS path is necessary because `mise oci build` embeds host-native
 binaries into the image. On Linux the build runs directly; on macOS an
@@ -132,7 +185,10 @@ src/
     lifecycle.ts            querySandboxState, planRunSequence
     print.ts                shell-safe quoting
   build/
-    oci.ts                  mise oci build + msb image load
+    oci.ts                  mise oci build + msb image load pipeline
+    custombase.ts           personal Containerfile discovery, mise version
+                            preflight, temporary loopback registry handoff
+    print.ts                print-mode argv planner for the build pipeline
   install/
     symlink.ts              ~/.local/bin/mise-msb symlink installer
 ```

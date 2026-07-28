@@ -44,6 +44,19 @@ export function personalConfigPath(homeDir: string = homedir()): string {
 }
 
 /**
+ * Return the user's personal image directory — the fixed Docker build
+ * context and home of the optional personal `Containerfile`. Resolves the
+ * same way as {@link personalConfigPath} so both stay under one config root.
+ */
+export function personalImageDirPath(homeDir: string = homedir()): string {
+  const xdg = process.env["XDG_CONFIG_HOME"];
+  if (xdg && xdg.length > 0) {
+    return join(xdg, "mise-msb", "image");
+  }
+  return join(homeDir, ".config", "mise-msb", "image");
+}
+
+/**
  * Walk up from `start` looking for `.sandbox.toml`.
  * Returns the resolved path, or null if none is found.
  */

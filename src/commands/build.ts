@@ -1,8 +1,16 @@
 /**
  * `build` — Build OCI image from the project's mise.toml.
+ *
+ * When a personal Containerfile is present at
+ * `~/.config/mise-msb/image/Containerfile`, the build uses a locally built
+ * base handed to `mise oci build` through a temporary loopback registry.
+ * Otherwise it uses the configured `build.from` directly without Docker.
  */
 
-import { buildOciImage, planMacOsBuilder, runMacOsBuilder, shouldUseDirectMise } from "../build/oci.js";
+import { runBuildPipeline, shouldUseDirectMise } from "../build/oci.js";
+import { planBuildGroups } from "../build/print.js";
+import { discoverPersonalContainerfile } from "../build/custombase.js";
+import { formatArgvGroups } from "../msb/print.js";
 import type { GlobalOptions } from "./dispatch.js";
 import { resolveInvocation } from "./_shared.js";
 
@@ -21,66 +29,22 @@ export async function runBuildCommand(
   }
 
   if (print) {
-    const { formatArgvGroups } = await import("../msb/print.js");
-    if (shouldUseDirectMise(platform)) {
-      const miseArgv = [
-        "mise",
-        "oci",
-        "build",
-        "--from",
-        config.build.from,
-        "--tag",
-        config.build.tag,
-        "--output",
-        "<temp-output>/layout",
-      ];
-      const tarArgv = ["tar", "-C", "<temp-output>/layout", "-cf", "<temp-output>/image.tar", "."];
-      const loadArgv = ["msb", "image", "load", "--input", "<temp-output>/image.tar", "--tag", config.build.tag];
-      process.stdout.write(formatArgvGroups([miseArgv, tarArgv, loadArgv]) + "\n");
-    } else {
-      const plan = planMacOsBuilder({
-        config,
-        projectRoot,
-        outputDir: "<temp-output>",
-      });
-      const tarArgv = ["tar", "-C", "<temp-output>/layout", "-cf", "<temp-output>/image.tar", "."];
-      const loadArgv = ["msb", "image", "load", "--input", "<temp-output>/image.tar", "--tag", config.build.tag];
-      process.stdout.write(formatArgvGroups([plan.argv, tarArgv, loadArgv]) + "\n");
-    }
+    const custom = discoverPersonalContainerfile();
+    const groups = planBuildGroups({ config, projectRoot, platform, custom });
+    process.stdout.write(formatArgvGroups(groups) + "\n");
     return;
   }
 
-  if (shouldUseDirectMise(platform)) {
-    const result = await buildOciImage({ config, projectRoot, printOnly: false });
-    if (result.exitCode !== 0) {
-      console.error(
-        `mise-msb build: stage "${result.failedStage}" failed; archive preserved at ${result.archivePath}`,
-      );
-      process.exit(result.exitCode);
-    }
-    console.log(`mise-msb build: loaded ${config.build.tag}`);
-    return;
-  }
-
-  const { mkdirSync } = await import("node:fs");
-  const { join } = await import("node:path");
-  const outputDir = join(process.cwd(), ".mise-msb-build", `macos-${Date.now()}`);
-  mkdirSync(outputDir, { recursive: true });
-  const plan = planMacOsBuilder({ config, projectRoot, outputDir });
-  const exit = await runMacOsBuilder(plan, false);
-  if (exit !== 0) {
-    console.error(`mise-msb build: macOS builder failed with exit ${exit}`);
-    process.exit(exit);
-  }
-  const result = await buildOciImage({
+  const result = await runBuildPipeline({
     config,
     projectRoot,
     printOnly: false,
-    outputDir,
+    discoverContainerfile: true,
   });
   if (result.exitCode !== 0) {
+    const detail = result.message !== undefined ? `\n${result.message}` : "";
     console.error(
-      `mise-msb build: archive/load failed; artifacts preserved at ${result.archivePath}`,
+      `mise-msb build: stage "${result.failedStage}" failed; archive preserved at ${result.archivePath}${detail}`,
     );
     process.exit(result.exitCode);
   }

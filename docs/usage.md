@@ -244,6 +244,139 @@ support.
 Use `mise-msb build --print` to inspect the exact commands without
 running them.
 
+## Personal Containerfile Base
+
+The default build path layers project tools from `mise.toml` onto a
+registry image selected by `build.from`. To customize the base image
+itself — adding system packages, config files, or anything `mise oci
+build` cannot express — place a Containerfile at:
+
+```
+~/.config/mise-msb/image/Containerfile
+```
+
+When that file exists, `mise-msb build` builds it locally and hands the
+resulting base to `mise oci build` through a temporary loopback OCI
+registry that is **never published externally**. When the file is absent,
+the Docker-free `build.from` path is used unchanged.
+
+### Directory layout and build context
+
+The `~/.config/mise-msb/image` directory is the **complete Docker build
+context**. Only files under that directory are sent to the Docker daemon;
+siblings such as `~/.config/mise-msb/config.toml` are excluded by
+construction. A `.dockerignore` placed in the image directory is honored by
+Docker's normal rules.
+
+```
+~/.config/mise-msb/
+├── config.toml          # personal defaults (NOT part of the build context)
+└── image/               # the build context
+    ├── Containerfile     # required to opt in
+    ├── .dockerignore     # optional
+    └── ...               # any files your Containerfile COPYs
+```
+
+### Docker is an opt-in dependency
+
+Docker is required **only** when the personal Containerfile exists. The
+wrapper probes `docker` on `PATH` and fails before any mutation if it is
+missing. Projects and users that do not create the Containerfile keep the
+existing Docker-free workflow.
+
+### Trusted-code implications
+
+The personal Containerfile runs as trusted, operator-owned code with
+Docker-daemon authority: it can bind-mount host paths, run network
+operations, and write anywhere the Docker daemon can. Treat the image
+directory as personal configuration. This feature is **not** safe for
+untrusted or project-supplied Containerfiles — keep Containerfiles under
+your own `~/.config/mise-msb/image`, not in project repos.
+
+### Minimum Linux mise version
+
+The custom-base path requires the Linux mise process that executes
+`mise oci build` to be version `2026.7.12` or newer (the first release
+with non-loopback `oci.insecure_registries` support, needed on macOS).
+
+- **Linux** validates the host mise binary.
+- **macOS** validates mise inside `build.builderImage` via a preflight
+  `msb run <builder> -- mise --version`. Host macOS mise is never
+  inspected or constrained.
+
+If the version is too old, the build fails before Docker or the temporary
+registry starts, naming the detected version and (on macOS)
+`build.builderImage` as the component to update.
+
+### Local-only registry and cleanup
+
+For a custom-base build the wrapper:
+
+1. Starts a uniquely named `registry:2` container with port 5000
+   published to a **dynamically allocated** host port bound to `127.0.0.1`
+   only (never exposed to the LAN).
+2. Builds and tags the personal base as
+   `localhost:<port>/mise-msb/base:<build-id>` and pushes it **only** to
+   that temporary registry.
+3. Hands the base to `mise oci build`:
+   - **Linux** uses `localhost:<port>/mise-msb/base:<build-id>` (loopback,
+     insecure by convention).
+   - **macOS** uses `host.microsandbox.internal:<port>/mise-msb/base:<build-id>`
+     inside the builder VM, with
+     `MISE_OCI_INSECURE_REGISTRIES=host.microsandbox.internal:<port>` and
+     a host-network allow rule scoped to that single TCP port.
+4. Removes the temporary registry with `docker rm -f` after success or
+   failure. A cleanup failure is a warning when an earlier stage already
+   failed, and becomes the build failure only when all primary stages
+   succeeded.
+
+No external registry credentials or pushes are used. The registry exists
+only as a short-lived transport between local processes.
+
+### Print mode
+
+`mise-msb build --print` renders every custom-base stage in execution
+order with stable placeholders for runtime-allocated values:
+
+- `<registry-name>`, `<registry-port>`, `<build-id>` for the temporary
+  registry and tag
+- `<temp-output>` for the OCI layout/archive directory
+
+```bash
+$ mise-msb build --print   # Containerfile present (macOS)
+msb run <builder> -- mise --version
+docker run -d --name <registry-name> -p 127.0.0.1::5000 registry:2
+docker port <registry-name> 5000
+docker build -f <containerfile> -t localhost:<registry-port>/mise-msb/base:<build-id> <context-dir>
+docker push localhost:<registry-port>/mise-msb/base:<build-id>
+msb run <builder> ... --env MISE_OCI_INSECURE_REGISTRIES=host.microsandbox.internal:<registry-port> \
+    --net-rule allow@host.microsandbox.internal:tcp:<registry-port> \
+    -- mise oci build --from host.microsandbox.internal:<registry-port>/mise-msb/base:<build-id> ...
+tar -C <temp-output>/layout -cf <temp-output>/image.tar .
+msb image load --input <temp-output>/image.tar --tag <tag>
+docker rm -f <registry-name>
+```
+
+When the Containerfile is absent, print mode shows only the Docker-free
+`build.from` pipeline (mise/tar/load on Linux, or builder/tar/load on
+macOS).
+
+### Example: base-only Containerfile
+
+A minimal personal base that adds a few system packages:
+
+```dockerfile
+# ~/.config/mise-msb/image/Containerfile
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git less && \
+    rm -rf /var/lib/apt/lists/*
+```
+
+Project tool versions still come from each project's `mise.toml` via
+`mise oci build`; the Containerfile only customizes the base layer.
+
 ## Print Mode
 
 `--print` (alias `--dry-run`) outputs the generated `msb` argv without

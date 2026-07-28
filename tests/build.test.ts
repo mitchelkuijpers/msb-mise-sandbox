@@ -38,13 +38,17 @@ describe("planMacOsBuilder", () => {
       projectRoot: "/host/proj",
       outputDir: "/host/out",
     });
-    const argv = plan.argv.join(" ");
-    expect(argv).toContain("--mount-dir /host/proj:/workspace:ro");
-    expect(argv).toContain("--mount-dir /host/out:/out:rw");
-    expect(argv).toContain("MISE_EXPERIMENTAL=1");
-    expect(argv).toContain("mise oci build");
-    expect(argv).toContain("--from ubuntu:24.04");
-    expect(argv).toContain("--tag p:dev");
+    const all = [...plan.runArgv, ...plan.execArgv, ...plan.removeArgv].join(" ");
+    expect(all).toContain("--mount-dir /host/proj:/workspace:ro");
+    expect(all).toContain("--mount-dir /host/out:/out:rw");
+    expect(all).toContain("MISE_EXPERIMENTAL=1");
+    expect(all).toContain("mise oci build");
+    expect(all).toContain("--from ubuntu:24.04");
+    expect(all).toContain("--tag p:dev");
+    // Uses detach + exec + remove pattern.
+    expect(plan.runArgv.join(" ")).toContain("--detach");
+    expect(plan.execArgv.join(" ")).toContain("msb exec");
+    expect(plan.removeArgv.join(" ")).toContain("msb remove -f");
   });
 });
 

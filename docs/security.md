@@ -114,3 +114,12 @@ The wrapper's `install` command creates a symlink at
 - **The wrapper has zero third-party dependencies.** It uses Bun's built-in
   TOML parser and subprocess API. There is no JavaScript package supply
   chain to audit.
+- **Personal Containerfiles are trusted, operator-owned code.** When a
+  personal Containerfile exists at `~/.config/mise-msb/image/Containerfile`,
+  `mise-msb build` runs `docker build` with it. A Containerfile has full
+  Docker-daemon authority — it can bind host paths, run network fetches, and
+  write anywhere the daemon can. Keep Containerfiles under your own
+  `~/.config/mise-msb/image` and never use this feature for untrusted or
+  project-supplied Containerfiles. The temporary OCI registry it starts is
+  bound to loopback only, uses no authentication, and is removed after the
+  build, so it is not a remote attack surface.

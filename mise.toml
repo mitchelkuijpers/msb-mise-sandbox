@@ -50,3 +50,7 @@ run = "bash"
 [tasks.install]
 description = "Symlink the mise-msb wrapper into ~/.local/bin"
 run = "bun bin/mise-msb install"
+
+[tasks.build-builder]
+description = "Build the mise-msb-builder image and load it into msb"
+run = "docker build --load -t mise-msb-builder:latest builder/ && docker save mise-msb-builder:latest | msb image load --tag mise-msb-builder:latest"

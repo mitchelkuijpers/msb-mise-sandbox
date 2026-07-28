@@ -6,7 +6,7 @@ function baseConfig(overrides: Partial<SandboxConfig> = {}): SandboxConfig {
   return {
     ...BUILTIN_DEFAULTS,
     identity: { name: "p", workdir: "/workspace" },
-    build: { ...BUILTIN_DEFAULTS.build, tag: "p:dev", from: "ubuntu:24.04", builderImage: "ubuntu:24.04" },
+    stock: { ...BUILTIN_DEFAULTS.stock },
     runtime: { cpus: 4, memory: "8G" },
     workdirTarget: "/workspace",
     mounts: {},

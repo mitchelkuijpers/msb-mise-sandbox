@@ -62,10 +62,10 @@ describe("validateLayers", () => {
 });
 
 describe("validateMerged", () => {
-  test("rejects empty image tag", () => {
+  test("rejects invalid docker data size", () => {
     const merged: SandboxConfig = {
       identity: { name: "p", workdir: "/workspace" },
-      build: { from: "ubuntu:24.04", tag: "", builderImage: "ubuntu:24.04" },
+      stock: { imageMode: "stock", dockerDataSize: "invalid" as unknown as `${number}${"M" | "G"}` },
       runtime: { cpus: 4, memory: "8G" },
       workdirTarget: "/workspace",
       mounts: {},
@@ -75,7 +75,29 @@ describe("validateMerged", () => {
       secrets: {},
       labels: {},
     };
-    expect(() => validateMerged(merged)).toThrow(/build\.tag/);
+    expect(() => validateMerged(merged)).toThrow(/stock\.dockerDataSize/);
+  });
+
+  test("stock mode rejects mounts targeting reserved stock paths", () => {
+    for (const target of ["/mise", "/var/lib/docker"]) {
+      const merged = mergeConfigs([
+        { identity: { name: "p" }, mounts: { data: { kind: "named", source: "data", target } } },
+      ]);
+      expect(() => validateMerged(merged)).toThrow(
+        new RegExp(`mounts\\.data\\.target.*${target.replace(/\//g, "\\/")}`),
+      );
+    }
+  });
+
+  test("custom image mode allows mounts at stock-reserved paths", () => {
+    const merged = mergeConfigs([
+      {
+        identity: { name: "p" },
+        stock: { imageMode: "custom", customImage: "p:dev" },
+        mounts: { data: { kind: "named", source: "data", target: "/var/lib/docker" } },
+      },
+    ]);
+    expect(() => validateMerged(merged)).not.toThrow();
   });
 });
 
@@ -85,10 +107,9 @@ describe("integration with mergeConfigs", () => {
       { runtime: { cpus: 6, memory: "16G" } },
       { env: { NODE_ENV: "production" } },
       { network: { defaultEgress: "deny", allow: ["github.com:tcp:443"] } },
+      { stock: { imageMode: "custom", customImage: "my-project:dev", dockerDataSize: "20G" } },
     ]);
-    // Apply identity defaults (as loadConfig would).
     merged.identity.name = "p";
-    merged.build.tag = "p:dev";
     expect(() => validateMerged(merged)).not.toThrow();
   });
 });
@@ -104,7 +125,7 @@ describe("loadConfig end-to-end", () => {
     expect(config.runtime.cpus).toBe(6);
     expect(config.network.defaultEgress).toBe("deny");
     expect(config.identity.name).toBeTruthy();
-    expect(config.build.tag).toBe(`${config.identity.name}:dev`);
+    expect(config.stock.imageMode).toBe("stock");
     rmSync(dir, { recursive: true, force: true });
   });
 

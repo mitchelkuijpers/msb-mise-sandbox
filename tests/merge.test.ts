@@ -103,9 +103,26 @@ describe("mergeConfigs", () => {
 
   test("scalar last-non-empty wins (empty overlay does not erase)", () => {
     const merged = mergeConfigs([
-      { build: { from: "ubuntu:22.04" } },
-      { build: { from: "" } },
+      { stock: { dockerDataSize: "20G" } },
+      { stock: { dockerDataSize: "" } },
     ]);
-    expect(merged.build.from).toBe("ubuntu:22.04");
+    expect(merged.stock.dockerDataSize).toBe("20G");
+  });
+
+  test("custom image mode requires reference", () => {
+    const merged = mergeConfigs([
+      { stock: { imageMode: "custom", customImage: "my-project:v2", dockerDataSize: "30G" } },
+    ]);
+    expect(merged.stock.imageMode).toBe("custom");
+    expect(merged.stock.customImage).toBe("my-project:v2");
+    expect(merged.stock.dockerDataSize).toBe("30G");
+  });
+
+  test("stock mode discards customImage", () => {
+    const merged = mergeConfigs([
+      { stock: { imageMode: "stock", customImage: "", dockerDataSize: "10G" } },
+    ]);
+    expect(merged.stock.imageMode).toBe("stock");
+    expect(merged.stock.customImage).toBeUndefined();
   });
 });

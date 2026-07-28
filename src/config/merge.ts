@@ -19,6 +19,7 @@
 import {
   BUILTIN_DEFAULTS,
   type EgressPolicy,
+  type ImageMode,
   type PartialConfig,
   type Protocol,
   type SandboxConfig,
@@ -37,7 +38,7 @@ export function mergeConfigs(layers: PartialConfig[]): SandboxConfig {
 function cloneDefaults(): SandboxConfig {
   return {
     identity: { ...BUILTIN_DEFAULTS.identity },
-    build: { ...BUILTIN_DEFAULTS.build },
+    stock: { ...BUILTIN_DEFAULTS.stock },
     runtime: { ...BUILTIN_DEFAULTS.runtime },
     workdirTarget: BUILTIN_DEFAULTS.workdirTarget,
     mounts: {},
@@ -56,7 +57,7 @@ function cloneDefaults(): SandboxConfig {
 function mergeLayer(base: SandboxConfig, overlay: PartialConfig): SandboxConfig {
   const next: SandboxConfig = {
     identity: { ...base.identity },
-    build: { ...base.build },
+    stock: { ...base.stock },
     runtime: { ...base.runtime },
     workdirTarget: base.workdirTarget,
     mounts: { ...base.mounts },
@@ -80,18 +81,15 @@ function mergeLayer(base: SandboxConfig, overlay: PartialConfig): SandboxConfig 
     }
   }
 
-  if (overlay.build !== undefined) {
-    if (overlay.build.from !== undefined && overlay.build.from.length > 0) {
-      next.build.from = overlay.build.from;
+  if (overlay.stock !== undefined) {
+    if (overlay.stock.imageMode !== undefined) {
+      next.stock.imageMode = overlay.stock.imageMode as ImageMode;
     }
-    if (overlay.build.tag !== undefined && overlay.build.tag.length > 0) {
-      next.build.tag = overlay.build.tag;
+    if (overlay.stock.customImage !== undefined && overlay.stock.customImage.length > 0) {
+      next.stock.customImage = overlay.stock.customImage;
     }
-    if (
-      overlay.build.builderImage !== undefined &&
-      overlay.build.builderImage.length > 0
-    ) {
-      next.build.builderImage = overlay.build.builderImage;
+    if (overlay.stock.dockerDataSize !== undefined && overlay.stock.dockerDataSize.length > 0) {
+      next.stock.dockerDataSize = overlay.stock.dockerDataSize as `${number}${"M" | "G"}`;
     }
   }
 

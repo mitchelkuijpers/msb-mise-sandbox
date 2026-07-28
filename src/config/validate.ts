@@ -12,6 +12,10 @@ import type {
   Protocol,
   SandboxConfig,
 } from "./types.js";
+import {
+  STOCK_DOCKER_MOUNT_TARGET,
+  STOCK_MISE_MOUNT_TARGET,
+} from "../stock-image/constants.js";
 
 export class ConfigValidationError extends Error {
   readonly fieldPath: string;
@@ -82,7 +86,7 @@ export function validatePartial(
 ): void {
   // Reject unknown top-level keys.
   const allowedTopLevel = new Set([
-    "build",
+    "stock",
     "runtime",
     "workdir",
     "mounts",
@@ -104,42 +108,57 @@ export function validatePartial(
     }
   }
 
-  if (config.build !== undefined) {
-    const allowedBuild = new Set(["from", "tag", "builderImage"]);
-    for (const key of Object.keys(config.build)) {
-      if (!allowedBuild.has(key)) {
+  if (config.stock !== undefined) {
+    const allowedStock = new Set(["imageMode", "customImage", "dockerDataSize"]);
+    for (const key of Object.keys(config.stock)) {
+      if (!allowedStock.has(key)) {
         throw new ConfigValidationError(
-          `unknown build key "${key}"`,
-          `build.${key}`,
-          sourceFile,
-        );
-      }
-    }
-    if (config.build.from !== undefined && config.build.from.length === 0) {
-      throw new ConfigValidationError(
-        "build.from must not be empty",
-        "build.from",
-        sourceFile,
-      );
-    }
-    if (config.build.tag !== undefined && config.build.tag.length > 0) {
-      if (!isCliSafe(config.build.tag)) {
-        throw new ConfigValidationError(
-          "build.tag contains characters not safe for CLI use",
-          "build.tag",
+          `unknown stock key "${key}"`,
+          `stock.${key}`,
           sourceFile,
         );
       }
     }
     if (
-      config.build.builderImage !== undefined &&
-      config.build.builderImage.length === 0
+      config.stock.imageMode !== undefined &&
+      config.stock.imageMode !== "stock" &&
+      config.stock.imageMode !== "custom"
     ) {
       throw new ConfigValidationError(
-        "build.builderImage must not be empty",
-        "build.builderImage",
+        'stock.imageMode must be "stock" or "custom"',
+        "stock.imageMode",
         sourceFile,
       );
+    }
+    if (
+      config.stock.imageMode === "custom" &&
+      (config.stock.customImage === undefined || config.stock.customImage.length === 0)
+    ) {
+      throw new ConfigValidationError(
+        "stock.customImage is required when stock.imageMode is 'custom'",
+        "stock.customImage",
+        sourceFile,
+      );
+    }
+    if (
+      config.stock.customImage !== undefined &&
+      config.stock.customImage.length > 0 &&
+      !isCliSafe(config.stock.customImage)
+    ) {
+      throw new ConfigValidationError(
+        "stock.customImage contains characters not safe for CLI use",
+        "stock.customImage",
+        sourceFile,
+      );
+    }
+    if (config.stock.dockerDataSize !== undefined) {
+      if (!isValidMemory(config.stock.dockerDataSize)) {
+        throw new ConfigValidationError(
+          'stock.dockerDataSize must match /^\\d+[MG]$/',
+          "stock.dockerDataSize",
+          sourceFile,
+        );
+      }
     }
   }
 
@@ -171,34 +190,6 @@ export function validatePartial(
           sourceFile,
         );
       }
-    }
-  }
-  if (config.build !== undefined) {
-    if (config.build.from !== undefined && config.build.from.length === 0) {
-      throw new ConfigValidationError(
-        "build.from must not be empty",
-        "build.from",
-        sourceFile,
-      );
-    }
-    if (config.build.tag !== undefined && config.build.tag.length > 0) {
-      if (!isCliSafe(config.build.tag)) {
-        throw new ConfigValidationError(
-          "build.tag contains characters not safe for CLI use",
-          "build.tag",
-          sourceFile,
-        );
-      }
-    }
-    if (
-      config.build.builderImage !== undefined &&
-      config.build.builderImage.length === 0
-    ) {
-      throw new ConfigValidationError(
-        "build.builderImage must not be empty",
-        "build.builderImage",
-        sourceFile,
-      );
     }
   }
 
@@ -523,17 +514,46 @@ export function validateMerged(config: SandboxConfig): void {
       "runtime.memory",
     );
   }
-  if (config.build.tag.length === 0) {
+  if (!isValidMemory(config.stock.dockerDataSize)) {
     throw new ConfigValidationError(
-      "build.tag must not be empty (derive a name from the project root)",
-      "build.tag",
+      'stock.dockerDataSize must match /^\\d+[MG]$/',
+      "stock.dockerDataSize",
     );
   }
-  if (!isCliSafe(config.build.tag)) {
+  if (config.stock.imageMode === "stock" && config.stock.customImage !== undefined) {
     throw new ConfigValidationError(
-      "build.tag contains characters not safe for CLI use",
-      "build.tag",
+      "stock.customImage is not used in stock mode; switch to custom mode or remove the reference",
+      "stock.customImage",
     );
+  }
+  if (config.stock.imageMode === "custom") {
+    if (config.stock.customImage === undefined || config.stock.customImage.length === 0) {
+      throw new ConfigValidationError(
+        "stock.customImage is required when stock.imageMode is 'custom'",
+        "stock.customImage",
+      );
+    }
+    if (!isCliSafe(config.stock.customImage)) {
+      throw new ConfigValidationError(
+        "stock.customImage contains characters not safe for CLI use",
+        "stock.customImage",
+      );
+    }
+  }
+  if (config.stock.imageMode === "stock") {
+    const reservedTargets: Record<string, string> = {
+      [STOCK_MISE_MOUNT_TARGET]: "the mise data volume",
+      [STOCK_DOCKER_MOUNT_TARGET]: "the Docker data volume",
+    };
+    for (const [name, mount] of Object.entries(config.mounts)) {
+      const reservedFor = reservedTargets[mount.target];
+      if (reservedFor !== undefined) {
+        throw new ConfigValidationError(
+          `mount "${name}" targets ${mount.target}, which stock mode reserves for ${reservedFor}; remove the mount or switch to custom image mode`,
+          `mounts.${name}.target`,
+        );
+      }
+    }
   }
   for (const [name, port] of Object.entries(config.ports)) {
     if (port.protocol !== "tcp" && port.protocol !== "udp") {

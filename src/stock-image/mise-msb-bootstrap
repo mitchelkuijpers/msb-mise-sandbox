@@ -1,0 +1,48 @@
+#!/bin/bash
+set -euo pipefail
+
+MARKER_BASE="/var/lib/mise-msb"
+COMMAND="${1:-}"
+
+usage() {
+    echo "Usage: mise-msb-bootstrap <personal|project> [<hash>]"
+    echo ""
+    echo "Commands:"
+    echo "  personal <hash>   Run full personal bootstrap from MISE_GLOBAL_CONFIG_FILE"
+    echo "                    Skips if the sandbox-local marker matches the hash"
+    echo "  project           Trust and install project tools from /workspace"
+    echo "                    Uses --locked when mise.lock exists"
+    exit 1
+}
+
+case "$COMMAND" in
+    personal)
+        HASH="${2:-}"
+        if [ -z "$HASH" ]; then
+            echo "mise-msb-bootstrap: personal requires a hash argument" >&2
+            exit 1
+        fi
+        MARKER="$MARKER_BASE/personal-bootstrap-hash"
+        if [ -f "$MARKER" ] && [ "$(cat "$MARKER")" = "$HASH" ]; then
+            exit 0
+        fi
+        if [ -n "${MISE_GLOBAL_CONFIG_FILE:-}" ] && [ -f "$MISE_GLOBAL_CONFIG_FILE" ]; then
+            mkdir -p /tmp/mise-msb-personal-bootstrap
+            mise install --cd /tmp/mise-msb-personal-bootstrap
+        fi
+        mkdir -p "$MARKER_BASE"
+        echo -n "$HASH" > "$MARKER"
+        ;;
+    project)
+        cd /workspace
+        mise trust
+        if [ -f mise.lock ]; then
+            env -u MISE_GLOBAL_CONFIG_FILE mise install --locked
+        else
+            mise install
+        fi
+        ;;
+    *)
+        usage
+        ;;
+esac

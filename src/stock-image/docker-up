@@ -1,0 +1,22 @@
+#!/bin/bash
+set -e
+
+MAX_WAIT=30
+INTERVAL=2
+
+if ! pidof dockerd > /dev/null 2>&1; then
+    dockerd > /var/log/dockerd.log 2>&1 &
+fi
+
+for i in $(seq 1 $MAX_WAIT); do
+    if docker info > /dev/null 2>&1; then
+        exit 0
+    fi
+    sleep $INTERVAL
+done
+
+echo "docker-up: dockerd did not become ready within $((MAX_WAIT * INTERVAL)) seconds" >&2
+echo "docker-up: daemon logs (last 30 lines):" >&2
+tail -30 /var/log/dockerd.log 2>/dev/null || true
+echo "docker-up: run 'dockerd --debug' manually for more diagnostics" >&2
+exit 1

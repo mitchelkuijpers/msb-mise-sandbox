@@ -19,6 +19,12 @@ import {
   mountArgv,
 } from "./argv.js";
 import { run, type SpawnResult } from "./subprocess.js";
+import {
+  DOCKER_UP_HELPER,
+  BOOTSTRAP_HELPER,
+  STOCK_IMAGE_TAG,
+} from "../stock-image/constants.js";
+import { discoverPersonalBootstrap, hashBootstrapDir } from "../bootstrap/discovery.js";
 
 export interface RunCommandInput {
   argv: string[];
@@ -53,8 +59,6 @@ export async function runCommand(input: RunCommandInput): Promise<RunCommandOutp
 export type SandboxState = "absent" | "stopped" | "running";
 
 export function querySandboxState(name: string): SandboxState {
-  // msb list returns a multi-column table on stdout. We capture stdout via
-  // Bun.spawnSync so we can inspect it without echoing it to the terminal.
   const proc = Bun.spawnSync({
     cmd: ["msb", "list"],
     env: process.env,
@@ -66,8 +70,6 @@ export function querySandboxState(name: string): SandboxState {
   const stdout = proc.stdout.toString();
   for (const line of stdout.split("\n")) {
     if (!line.includes(name)) continue;
-    // Heuristic: a "running" sandbox has an active state column (e.g.
-    // "running" or "active"). Stopped names still appear in `msb list`.
     if (/\brunning\b|\bactive\b/.test(line)) {
       return "running";
     }
@@ -77,10 +79,60 @@ export function querySandboxState(name: string): SandboxState {
 }
 
 /**
- * Sequence of argv arrays for `run`: each element is a separate msb
- * invocation in execution order. Returned in print order so callers can
- * render them as a multi-step block.
+ * Check whether the expected stock image is loaded.
+ * Used as a preflight before stock sandbox creation.
  */
+export function stockImageIsLoaded(): boolean {
+  const proc = Bun.spawnSync({
+    cmd: ["msb", "image", "list"],
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  if (proc.exitCode !== 0) return false;
+  return proc.stdout.toString().includes(STOCK_IMAGE_TAG);
+}
+
+/**
+ * Build stock bootstrap argv groups for a named sandbox.
+ * Returns groups in execution order: Docker readiness, personal bootstrap
+ * (if configured), project bootstrap.
+ */
+export interface StockBootstrapInput {
+  name: string;
+  config: SandboxConfig;
+  homeDir?: string;
+}
+
+export function planStockBootstrapStages(input: StockBootstrapInput): string[][] {
+  const groups: string[][] = [];
+  const { name, config } = input;
+
+  // Stage: Docker readiness (stock mode only).
+  if (config.stock.imageMode === "stock") {
+    groups.push(buildExecArgv(name, [DOCKER_UP_HELPER]));
+  }
+
+  // Stage: personal bootstrap (if configured).
+  const personal = discoverPersonalBootstrap(input.homeDir);
+  if (personal !== null) {
+    const hash = hashBootstrapDir(personal.dir);
+    groups.push(buildExecArgv(name, [
+      BOOTSTRAP_HELPER,
+      "personal",
+      hash,
+    ]));
+  }
+
+  // Stage: project bootstrap.
+  groups.push(buildExecArgv(name, [BOOTSTRAP_HELPER, "project"]));
+
+  return groups;
+}
+
+// ---------------------------------------------------------------------------
+// Sequence of argv arrays for `run`: each element is a separate msb
+// invocation in execution order.
+// ---------------------------------------------------------------------------
+
 export interface RunSequence {
   groups: string[][];
   /** The sandbox name in use. */
@@ -97,20 +149,17 @@ export interface RunSequenceInput {
   name?: string;
   /** Force replacement rather than start-existing. */
   replace?: boolean;
+  /** Optional home dir override (used in tests). */
+  homeDir?: string;
 }
 
 export function planRunSequence(input: RunSequenceInput): RunSequence {
   const name = input.name ?? input.config.identity.name;
   const groups: string[][] = [];
 
-  // Step 1: determine state via msb list (not added to argv sequence; it
-  // is a read-only inspection step that does not get printed).
   let state: SandboxState = "absent";
   if (!input.config.command && !input.commandArgv) {
-    // For pure "run" without a command we still create + start, then msb
-    // exec attaches the default shell. msb list is only consulted when we
-    // need to know whether to start or replace.
-    state = "absent"; // we'll let `create --replace` handle re-creation
+    state = "absent";
   } else {
     state = querySandboxState(name);
   }
@@ -127,9 +176,17 @@ export function planRunSequence(input: RunSequenceInput): RunSequence {
   } else if (state === "stopped") {
     groups.push(buildStartArgv(name));
   }
-  // If state === "running", no startup step is needed.
 
-  // Step 2: exec the command.
+  // Stock mode: inject bootstrap stages.
+  if (input.config.stock.imageMode === "stock") {
+    const bootstrap = planStockBootstrapStages({
+      name,
+      config: input.config,
+      homeDir: input.homeDir,
+    });
+    groups.push(...bootstrap);
+  }
+
   const command = input.commandArgv ?? input.config.command?.argv ?? ["bash"];
   groups.push(buildExecArgv(name, command));
 

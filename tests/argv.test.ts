@@ -7,7 +7,7 @@ function baseConfig(overrides: Partial<SandboxConfig> = {}): SandboxConfig {
   return {
     ...BUILTIN_DEFAULTS,
     identity: { name: "p", workdir: "/workspace" },
-    build: { ...BUILTIN_DEFAULTS.build, tag: "p:dev", from: "ubuntu:24.04", builderImage: "ubuntu:24.04" },
+    stock: { ...BUILTIN_DEFAULTS.stock },
     runtime: { cpus: 4, memory: "8G" },
     workdirTarget: "/workspace",
     mounts: {},
@@ -131,7 +131,9 @@ describe("buildCreateArgv", () => {
     const expected =
       "msb create p:dev --name p --cpus 4 --memory 8G --workdir /workspace " +
       "--env NODE_ENV=production --net-default deny --net-rule allow@github.com:tcp:443 " +
-      "--secret K@api.example --mount-named cache:/cache --port 127.0.0.1:8080:8080";
+      "--secret K@api.example --mount-named cache:/cache --mount-named p-mise-v1:/mise " +
+      "--mount-named p-docker-data:/var/lib/docker:kind=disk,size=10G " +
+      "--port 127.0.0.1:8080:8080";
     expect(formatArgv(argv)).toBe(expected);
   });
 
@@ -165,7 +167,7 @@ describe("mountArgv", () => {
   test("disk mount with size", () => {
     expect(
       mountArgv({ kind: "disk", source: "d", target: "/d", size: "5G" }),
-    ).toEqual(["--mount-disk", "d:/d:size=5G"]);
+    ).toEqual(["--mount-named", "d:/d:kind=disk,size=5G"]);
   });
   test("file mount with options", () => {
     expect(

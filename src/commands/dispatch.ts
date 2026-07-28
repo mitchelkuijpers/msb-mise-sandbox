@@ -6,7 +6,6 @@
  * enough that explicit parsing is clearer than a framework.
  */
 
-import { runBuildCommand } from "./build.js";
 import { runConfigCommand } from "./config.js";
 import { runCreateCommand } from "./create.js";
 import { runExecCommand } from "./exec.js";
@@ -14,6 +13,7 @@ import { runInstallCommand } from "./install.js";
 import { runListCommand } from "./list.js";
 import { runRemoveCommand } from "./remove.js";
 import { runRunCommand } from "./run.js";
+import { runSetupCommand } from "./setup.js";
 import { runShellCommand } from "./shell.js";
 import { runStartCommand } from "./start.js";
 import { runStopCommand } from "./stop.js";
@@ -32,7 +32,7 @@ Options:
   --config <path>      Use a specific .sandbox.toml instead of discovery
 
 Commands:
-  build [--print]               Build OCI image from mise.toml
+  setup [--print] [--force]     Build and load the local stock runtime image
   create <name> [--print]       Create a sandbox
   run <name> [-- cmd...]        Create (or start) + exec command
   shell <name> [--print]        Attach interactive shell
@@ -55,8 +55,8 @@ export async function dispatch(argv: string[]): Promise<void> {
   }
 
   switch (command) {
-    case "build":
-      await runBuildCommand(global, rest.slice(1));
+    case "setup":
+      await runSetupCommand(global, rest.slice(1));
       return;
     case "create":
       await runCreateCommand(global, rest.slice(1));

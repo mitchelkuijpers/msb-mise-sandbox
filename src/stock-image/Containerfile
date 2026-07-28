@@ -1,0 +1,47 @@
+FROM ubuntu:24.04
+
+ARG MISE_VERSION=v2026.7.15
+ARG STOCK_GENERATION=1
+
+LABEL mise-msb.stock-generation=${STOCK_GENERATION}
+LABEL mise-msb.component=stock-runtime
+LABEL mise-msb.mise-version=${MISE_VERSION}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    gnupg \
+    jq \
+    libatomic1 \
+    lsb-release \
+    sudo \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://mise.run | MISE_VERSION=${MISE_VERSION} sh \
+    && ln -s /root/.local/bin/mise /usr/local/bin/mise
+
+RUN mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    docker-ce \
+    docker-ce-cli \
+    containerd.io \
+    docker-buildx-plugin \
+    docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker-up /usr/local/bin/docker-up
+COPY mise-msb-bootstrap /usr/local/bin/mise-msb-bootstrap
+RUN chmod +x /usr/local/bin/docker-up /usr/local/bin/mise-msb-bootstrap
+
+ENV MISE_DATA_DIR=/mise/data
+ENV MISE_CACHE_DIR=/mise/cache
+ENV MISE_CONFIG_DIR=/mise/config
+ENV MISE_STATE_DIR=/mise/state
+ENV MISE_SHIMS_DIR=/mise/shims
+ENV PATH=/mise/shims:/mise/data/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+WORKDIR /workspace

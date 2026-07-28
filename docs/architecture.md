@@ -3,10 +3,9 @@
 ## Overview
 
 `mise-msb` is a stateless Bun/TypeScript wrapper that translates layered
-TOML configuration into inspectable `mise` and `msb` commands. The
-wrapper itself does not implement sandbox lifecycle, secret injection,
-or network policy — it delegates those to `mise` and `msb`, which the
-runtime already provides.
+TOML configuration into inspectable `msb` commands. The wrapper itself
+does not implement sandbox lifecycle, secret injection, or network policy
+— it delegates those to `msb`, which the runtime already provides.
 
 Three properties:
 
@@ -44,95 +43,102 @@ Each layer is validated before merging. The merge function
 (`src/config/merge.ts`) implements per-section rules documented in the
 design and verified by unit tests in `tests/merge.test.ts`.
 
-## Build Pipeline
+## Stock Image Setup
 
 ```
-        ┌────────────────────────────────────┐
-        │ Linux host                         │
-        │   $ mise oci build --from <base>   │
-        │       --tag <tag> --output <dir>   │
-        └────────────────────────────────────┘
-                          OR (macOS)
-        ┌────────────────────────────────────┐
-        │ macOS host                         │
-        │   $ msb run <builder-image> \      │
-        │       --mount-dir <proj>:/ws:ro \  │
-        │       --mount-dir <out>:/out:rw \  │
-        │       -- mise oci build ...        │
-        └────────────────────────────────────┘
-                          ↓
-        ┌────────────────────────────────────┐
-        │ tar -C <layout> -cf <archive> .    │
-        └────────────────────────────────────┘
-                          ↓
-        ┌────────────────────────────────────┐
-        │ msb image load --input <archive> \ │
-        │     --tag <tag>                    │
-        └────────────────────────────────────┘
+┌──────────────────────────────────────┐
+│ mise-msb setup                       │
+│   → docker build -t mise-msb-base:v1 │
+│   → docker save -o <archive>         │
+│   → msb image load --input <archive> │
+└──────────────────────────────────────┘
 ```
 
-The macOS path is necessary because `mise oci build` embeds host-native
-binaries into the image. On Linux the build runs directly; on macOS an
-ephemeral Linux microVM (provided by `msb`) executes the build with the
-project mounted read-only and the output mounted read-write.
+Setup is explicit and separate from lifecycle commands. Warm setup skips
+when the expected generation is already loaded. The stock Containerfile
+(`src/stock-image/Containerfile`) bakes in pinned mise, Docker CE,
+common prerequisites, and versioned runtime helpers.
 
-## Lifecycle
+## Stock Lifecycle
 
 ```
-┌────────────────────────────────────┐
-│ mise-msb create <name> --print     │  inspect generated msb create argv
-└────────────────────────────────────┘
-                  ↓
-        (optional) execute
-                  ↓
-┌────────────────────────────────────┐
-│ msb create <image> --name <name>   │
-│   --cpus N --memory M              │
-│   --workdir /workspace             │
-│   --env KEY=value (sorted)         │
-│   --label K=V (sorted)             │
-│   --net-default allow|deny         │
-│   --net-rule allow@<host:proto:port> (sorted)
-│   --secret SRC@HOST (sorted)       │
-│   --mount-{dir,file,disk,named}    │
-│   --port BIND:HOST:GUEST[/udp]     │
-└────────────────────────────────────┘
+mise-msb create <name>
+    ↓
+msb create mise-msb-base:v1 --name <name> --mount-named <name>-mise-v1:/mise ...
+    ↓
+msb exec <name> -- docker-up                           (Docker readiness)
+    ↓
+msb exec <name> -- mise-msb-bootstrap personal <hash>  (personal bootstrap, optional)
+    ↓
+msb exec <name> -- mise-msb-bootstrap project          (project tools)
+    ↓
+msb exec <name> -- <user command>                      (upon exec/shell/run)
 ```
+
+Stock mode runs lifecycle bootstrap stages after create or start. Any
+stage failure stops the sequence and propagates the exit code.
+
+## Personal Bootstrap
+
+Optional per-developer bootstrap at `~/.config/mise-msb/bootstrap/mise.toml`:
+
+```
+~/.config/mise-msb/bootstrap/mise.toml  →  mounted at /etc/mise-msb/personal (ro)
+                                             MISE_GLOBAL_CONFIG_FILE=/etc/mise-msb/personal/mise.toml
+```
+
+Content-hashed change detection avoids re-running personal provisioning
+on unchanged warm starts. The hash lives in sandbox-local writable state,
+not the persistent mise volume.
+
+## Image Modes
+
+| Mode | Image | Docker | Bootstrap | Use Case |
+|---|---|---|---|---|
+| `stock` (default) | `mise-msb-base:v{N}` | Managed | Managed | Normal development |
+| `custom` | Explicit reference | User-owned | User-owned | Custom base, no wrapper build |
 
 ## Module Layout
 
 ```
 src/
   mise-msb.ts               entry point
+  stock-image/
+    Containerfile            Ubuntu stock image with mise + Docker CE
+    docker-up                Idempotent Docker startup helper
+    mise-msb-bootstrap       Personal and project bootstrap helper
+    constants.ts             Stock image tag, mount paths, env vars
   commands/
-    dispatch.ts             hand-rolled CLI parser
-    _shared.ts              load + apply CLI overrides
-    build.ts                build command
-    create.ts               create command
-    run.ts                  run command (multi-step)
-    shell.ts                shell command
-    exec.ts                 exec command
-    start.ts / stop.ts /    thin lifecycle delegations
+    dispatch.ts              hand-rolled CLI parser
+    _shared.ts               load + apply CLI overrides
+    setup.ts                 stock image setup command
+    create.ts                create command (with stock bootstrap)
+    run.ts                   run command (multi-step, with bootstrap)
+    shell.ts                 shell command
+    exec.ts                  exec command
+    start.ts / stop.ts /     thin lifecycle delegations
     remove.ts / list.ts
-    config.ts               print merged config
-    install.ts              symlink installer
-    lifecycle.ts            internal helpers
+    config.ts                print merged config
+    install.ts               symlink installer
+    lifecycle.ts             internal helpers
   config/
-    types.ts                strict types + BUILTIN_DEFAULTS
-    loader.ts               TOML parsing + project discovery
-    merge.ts                deterministic merge
-    validate.ts             field-level validation
-    naming.ts               project name + tag derivation
-    secrets-check.ts        secret-source presence checks
-    records.ts              record merge helper
-    index.ts                loadConfig facade
+    types.ts                 strict types + BUILTIN_DEFAULTS
+    loader.ts                TOML parsing + project discovery
+    merge.ts                 deterministic merge
+    validate.ts              field-level validation
+    naming.ts                project name + image resolution
+    secrets-check.ts         secret-source presence checks
+    records.ts               record merge helper
+    index.ts                 loadConfig facade
   msb/
-    subprocess.ts           Bun.spawn wrapper, which(), printOnly
-    argv.ts                 deterministic argv builders
-    lifecycle.ts            querySandboxState, planRunSequence
-    print.ts                shell-safe quoting
-  build/
-    oci.ts                  mise oci build + msb image load
+    subprocess.ts            Bun.spawn wrapper, which(), printOnly
+    argv.ts                  deterministic argv builders (with stock mounts)
+    lifecycle.ts             querySandboxState, planRunSequence, bootstrap planning
+    print.ts                 shell-safe quoting
+  bootstrap/
+    discovery.ts             XDG-based personal bootstrap discovery and hashing
+  setup/
+    setup.ts                 Stock image build, save, load planner and execution
   install/
-    symlink.ts              ~/.local/bin/mise-msb symlink installer
+    symlink.ts               ~/.local/bin/mise-msb symlink installer
 ```

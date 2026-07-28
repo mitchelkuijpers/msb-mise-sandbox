@@ -2,8 +2,8 @@
  * `exec` — Execute a single command inside a running sandbox.
  */
 
-import { formatArgv } from "../msb/print.js";
-import { LifecycleArgv } from "../msb/lifecycle.js";
+import { formatArgv, formatArgvGroups } from "../msb/print.js";
+import { LifecycleArgv, planStockBootstrapStages } from "../msb/lifecycle.js";
 import type { GlobalOptions } from "./dispatch.js";
 import { applyNameOverride, resolveInvocation } from "./_shared.js";
 
@@ -26,13 +26,30 @@ export async function runExecCommand(
   }
   applyNameOverride(config, name, projectRoot);
 
-  const argv = LifecycleArgv.exec(name, commandArgv);
-
   if (print) {
-    process.stdout.write(formatArgv(argv) + "\n");
+    const groups: string[][] = [];
+    if (config.stock.imageMode === "stock") {
+      const bootstrap = planStockBootstrapStages({ name, config });
+      groups.push(...bootstrap);
+    }
+    groups.push(LifecycleArgv.exec(name, commandArgv));
+    process.stdout.write(formatArgvGroups(groups) + "\n");
     return;
   }
 
+  // Stock mode: ensure bootstrap before exec.
+  if (config.stock.imageMode === "stock") {
+    const bootstrap = planStockBootstrapStages({ name, config });
+    for (const argv of bootstrap) {
+      const bproc = Bun.spawn({ cmd: argv, stdio: ["inherit", "inherit", "inherit"] });
+      const code = await bproc.exited;
+      if (code !== 0) {
+        process.exit(code);
+      }
+    }
+  }
+
+  const argv = LifecycleArgv.exec(name, commandArgv);
   const proc = Bun.spawn({ cmd: argv, stdio: ["inherit", "inherit", "inherit"] });
   process.exit(await proc.exited);
 }

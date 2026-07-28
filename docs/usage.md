@@ -4,7 +4,7 @@
 
 | Command | Purpose |
 |---|---|
-| `build [--print]` | Build OCI image from project's `mise.toml` |
+| `setup [--print] [--force]` | Build and load the local stock runtime image |
 | `create <name> [--print]` | Create a sandbox from the merged config |
 | `run <name> [-- cmd...]` | Create (or start) and exec the configured command |
 | `shell <name> [--print]` | Attach an interactive shell |
@@ -19,6 +19,40 @@
 All lifecycle commands accept `--print` (alias `--dry-run`) to print the
 generated `msb` argv without executing it. Multi-step commands like
 `run` print each step in execution order.
+
+## Quick Start
+
+```bash
+# Build and load the local stock Ubuntu image (one-time setup)
+mise-msb setup
+
+# Create a stock-mode sandbox (Docker + mise bootstrap automatically)
+mise-msb create my-project
+
+# Run commands
+mise-msb exec my-project -- bun test
+mise-msb shell my-project
+```
+
+## Mounting Your Project
+
+Sandboxes never mount host paths implicitly, so a fresh sandbox starts with
+an **empty `/workspace`**. Almost every project wants its directory
+live-mounted there — stock sandboxes default `--workdir` to `/workspace` and
+the bootstrap runs `mise install` in it. Add this to your project's
+`.sandbox.toml`:
+
+```toml
+[mounts.workspace]
+kind = "dir"
+source = "."
+target = "/workspace"
+```
+
+`source = "."` resolves to the project root (the directory containing
+`.sandbox.toml`). Edits on either side are visible immediately; nothing is
+copied. Mounts are fixed at creation time, so recreate the sandbox after
+adding one (`mise-msb remove <name> && mise-msb create <name>`).
 
 ## Configuration Layers
 
@@ -35,7 +69,7 @@ Pass `--config <absolute-path>` to skip project discovery.
 
 | Section | Strategy |
 |---|---|
-| Scalar fields (`build.from`, `build.tag`, `runtime.cpus`, etc.) | Last non-empty wins |
+| Scalar fields (`stock.imageMode`, `runtime.cpus`, etc.) | Last non-empty wins |
 | `env` (record) | Deep merge; later keys override earlier |
 | Named `mounts`, `ports`, `secrets` tables | Merge by name; later entry replaces earlier |
 | `network.allow` (array of strings) | Append + dedupe unless `network.inherit = false`, in which case overlay replaces |
@@ -49,14 +83,23 @@ config.
 
 ## Schema Reference
 
-### `[build]`
+### `[stock]`
 
 ```toml
-[build]
-from = "ubuntu:24.04"          # base image for mise oci build
-tag = "my-project:dev"          # local image tag (defaults to <name>:dev)
-builderImage = "ubuntu:24.04"   # Linux image used on macOS for builds
+[stock]
+imageMode = "stock"            # "stock" (default) or "custom"
+customImage = "my-project:dev" # required when imageMode = "custom"
+dockerDataSize = "10G"         # Docker data volume size (M or G suffix)
 ```
+
+Stock mode uses the wrapper's versioned local stock image (`mise-msb-base:v1`),
+injects persistent named volumes for mise (`<sandbox>-mise-v1:/mise`) and
+Docker data (`<sandbox>-docker-data:/var/lib/docker`), and runs Docker
+readiness and mise bootstrap automatically.
+
+Custom mode requires an explicit image reference that the user has already
+made available to microsandbox. Custom images own their Docker and bootstrap
+compatibility.
 
 ### `[runtime]`
 
@@ -105,10 +148,14 @@ target = "/root/.cache"
 
 [mounts.data]
 kind = "disk"
-source = "/srv/data.img"
+source = "data-vol"
 target = "/data"
-size = "10G"        # required for disk mounts
+size = "10G"        # disk-backed named volume capacity
 ```
+
+In stock mode, `/mise` and `/var/lib/docker` are reserved for wrapper-managed
+persistent state. Declaring an explicit mount with either target in stock mode
+fails validation.
 
 ### `[ports.<name>]`
 
@@ -138,66 +185,109 @@ reading its value, then emits `--secret GITLAB_TOKEN@gitlab.com`.
 team = "platform"
 ```
 
-## Secret Configuration
+## Personal Bootstrap
 
-The TOML schema for secrets contains **references only**:
+Optional per-developer mise bootstrap at `~/.config/mise-msb/bootstrap/mise.toml`:
 
-- `from` — the host environment variable name (e.g. `GITLAB_TOKEN`).
-- `hosts` — allowed destination hosts (e.g. `["gitlab.com"]`).
+```toml
+# ~/.config/mise-msb/bootstrap/mise.toml
+[tools]
+ripgrep = "latest"
 
-The wrapper:
+[bootstrap]
+packages = ["fzf"]
+dotfiles = ["~/.gitconfig"]
+hooks = ["setup-personal-aliases"]
+```
 
-1. Verifies `from` is set in the host environment. Missing variables
-   cause a non-zero exit before any `msb` command runs.
-2. Emits one `--secret FROM@HOST` argument per host.
-3. Never reads, copies, logs, or places the secret value in argv.
+When present, the wrapper mounts the containing directory read-only at
+`/etc/mise-msb/personal`, sets `MISE_GLOBAL_CONFIG_FILE`, and runs
+personal bootstrap before project tool installation.
 
-The microsandbox runtime resolves the value from the inherited host
-environment at sandbox start time. Inline `FROM=VALUE@HOST` syntax is
-rejected by `msb` by design.
+Personal bootstrap content is content-hashed for change detection. A new
+sandbox or changed bootstrap content re-runs full personal provisioning;
+unchanged warm-start invocations skip it.
 
-## Network Policy
+## Stock Runtime Behaviour
 
-The default egress policy is `allow` — sandboxes can reach any
-destination unless the project explicitly sets `network.defaultEgress =
-"deny"` and configures `network.allow`.
+### Image Setup
 
-Secret hosts automatically receive network access: when a secret allows
-`api.example.com`, the wrapper ensures an equivalent `--net-rule` exists
-unless the project already specifies one.
+`mise-msb setup` builds the repository-owned Containerfile with host Docker,
+saves the resulting archive, and loads it with `msb image load`. Warm setup
+skips when the expected generation is already loaded. `setup --force` rebuilds.
+
+### Bootstrap Stages
+
+After `create` or `start`, stock mode runs these stages in order:
+
+1. **Docker readiness** — `docker-up` starts dockerd and waits for success
+2. **Personal bootstrap** — runs `mise-msb-bootstrap personal <hash>` when
+   personal configuration exists (skips on unchanged warm-start)
+3. **Project bootstrap** — `mise install --locked` when `mise.lock` exists,
+   otherwise `mise install`
+
+Any stage failure stops the sequence and propagates the exit code.
+
+### Persistent Volumes
+
+Stock mode creates two named volumes derived from the sandbox identity:
+
+| Volume | Target | Type | Purpose |
+|---|---|---|---|
+| `<sandbox>-mise-v1` | `/mise` | Directory-backed | Mise data, cache, config, state, shims |
+| `<sandbox>-docker-data` | `/var/lib/docker` | Disk-backed (10G default) | Docker images, containers, build cache |
+
+Volumes survive `remove`. The remove command prints each preserved name
+with a copyable `msb volume remove` command for manual cleanup.
+
+### Stock Image Preflight
+
+If the stock image is not loaded when creating or running a stock sandbox,
+the command fails with a copyable `mise-msb setup` instruction.
+
+## Print Mode
+
+`--print` (alias `--dry-run`) outputs the generated `msb` argv without
+executing it. Multi-step commands print each step in execution order,
+separated by blank lines. Stock mode includes bootstrap stages in the
+printed sequence.
+
+```bash
+$ mise-msb run my-project -- bun test --print
+msb create mise-msb-base:v1 --name my-project --cpus 4 --memory 8G \
+    --workdir /workspace --mount-named my-project-mise-v1:/mise \
+    --mount-named my-project-docker-data:/var/lib/docker:kind=disk,size=10G
+
+msb exec my-project -- docker-up
+
+msb exec my-project -- mise-msb-bootstrap personal <hash>
+
+msb exec my-project -- mise-msb-bootstrap project
+
+msb exec my-project -- bun test
+```
+
+## Install
+
+```bash
+# Symlink ~/.local/bin/mise-msb → <repo>/bin/mise-msb
+mise-msb install
+
+# Replace an existing link or file at the destination
+mise-msb install --force
+```
+
+The install command does not modify shell startup files. If
+`~/.local/bin` is not on `$PATH`, a one-line hint is printed after a
+successful install.
 
 ## Migration from `projects.json`
 
 Projects previously stored in `~/.agent-sandbox/projects.json` should be
 translated to per-project `.sandbox.toml` files:
 
-```jsonc
-// ~/.agent-sandbox/projects.json (old)
-{
-  "projects": {
-    "my-project": {
-      "image": "agent-sandbox:latest",
-      "gitlab": { "url": "https://gitlab.com", "tokenRef": "env:GITLAB_TOKEN" },
-      "secrets": [
-        { "env": "GITLAB_TOKEN", "from": "env:GITLAB_TOKEN", "allow": "gitlab.com" }
-      ],
-      "network": {
-        "defaultEgress": "deny",
-        "allow": ["gitlab.com:tcp:443"]
-      },
-      "resources": { "cpus": 4, "memory": "8G" }
-    }
-  }
-}
-```
-
-becomes:
-
 ```toml
 # <project>/.sandbox.toml
-[build]
-from = "ubuntu:24.04"
-
 [runtime]
 cpus = 4
 memory = "8G"
@@ -211,77 +301,16 @@ from = "GITLAB_TOKEN"
 hosts = ["gitlab.com"]
 ```
 
-After migration, `~/.agent-sandbox/projects.json` can be deleted.
+Stock mode is the default — no `[stock]` section is required.
 
-## Build Flow
+## Migration from `<project>:dev` builds
 
-### Linux hosts
+Projects that used `mise-msb build` and the `<project>:dev` image should:
 
-```
-mise oci build --from <base> --tag <tag> --output <layout>
-tar -C <layout> -cf <image.tar> .
-msb image load --input <image.tar> --tag <tag>
-```
+1. Run `mise-msb setup` once to build and load the local stock image
+2. Remove `[build]` sections from `.sandbox.toml` (now rejected by validation)
+3. Use stock mode (default) for wrapper-managed Docker and mise bootstrap
+4. Or select custom image mode with the externally built image reference
 
-### macOS hosts
-
-```
-msb run <builder-image> \
-    --mount-dir <project>:/workspace:ro \
-    --mount-dir <output>:/out:rw \
-    --env MISE_EXPERIMENTAL=1 \
-    -- mise oci build --from <base> --tag <tag> --output /out/layout
-
-tar -C <output>/layout -cf <output>/image.tar .
-msb image load --input <output>/image.tar --tag <tag>
-```
-
-The macOS path runs `mise oci build` inside a Linux microVM to avoid
-embedding host-native macOS binaries. The builder image defaults to
-`ubuntu:24.04` and must contain a recent mise with experimental OCI
-support.
-
-Use `mise-msb build --print` to inspect the exact commands without
-running them.
-
-## Print Mode
-
-`--print` (alias `--dry-run`) outputs the generated `msb` argv without
-executing it. Multi-step commands print each step in execution order,
-separated by blank lines.
-
-```bash
-$ mise-msb run my-project -- bun test --print
-msb create my-project:dev --name my-project --cpus 4 --memory 8G \
-    --workdir /workspace --env NODE_ENV=development --net-default deny
-
-msb exec my-project -- bun test
-```
-
-Secret arguments contain source environment variable names only:
-
-```bash
-$ mise-msb create my-project --print
-msb create my-project:dev --name my-project --secret GITLAB_TOKEN@gitlab.com ...
-```
-
-## Install
-
-```bash
-# Symlink ~/.local/bin/mise-msb → <repo>/bin/mise-msb
-mise-msb install
-
-# Replace an existing link or file at the destination
-mise-msb install --force
-
-# The wrapper refuses to recursively remove a directory at the destination,
-# even with --force.
-```
-
-The install command does not modify shell startup files. If
-`~/.local/bin` is not on `$PATH`, a one-line hint is printed after a
-successful install.
-
-A `mise run install` task in the tool repository's `mise.toml` invokes
-the wrapper's `install` command, so `mise run install` in the repo
-installs the tool.
+Named volumes from the old workflow remain intact but are no longer managed
+by the wrapper.

@@ -10,7 +10,7 @@ function baseConfig(overrides: Partial<SandboxConfig> = {}): SandboxConfig {
   return {
     ...BUILTIN_DEFAULTS,
     identity: { name: "p", workdir: "/workspace" },
-    build: { ...BUILTIN_DEFAULTS.build, tag: "p:dev", from: "ubuntu:24.04", builderImage: "ubuntu:24.04" },
+    stock: { ...BUILTIN_DEFAULTS.stock },
     runtime: { cpus: 4, memory: "8G" },
     workdirTarget: "/workspace",
     mounts: {},
@@ -24,18 +24,24 @@ function baseConfig(overrides: Partial<SandboxConfig> = {}): SandboxConfig {
 }
 
 describe("planRunSequence", () => {
-  test("absent sandbox: includes create + exec", () => {
+  test("absent sandbox: includes create + bootstrap stages + exec (stock mode)", () => {
     const seq = planRunSequence({
       config: baseConfig(),
       image: "p:dev",
       name: "p",
       commandArgv: ["bash"],
     });
-    expect(seq.groups).toHaveLength(2);
+    expect(seq.groups.length).toBeGreaterThanOrEqual(3);
     expect(seq.groups[0]?.[0]).toBe("msb");
     expect(seq.groups[0]?.[1]).toBe("create");
+    // Stock bootstrap stages appear between create and exec.
     expect(seq.groups[1]?.[0]).toBe("msb");
     expect(seq.groups[1]?.[1]).toBe("exec");
+    expect(seq.groups[1]?.[seq.groups[1]?.indexOf("--") + 1]).toBe("docker-up");
+    // Last group is the user command.
+    const last = seq.groups[seq.groups.length - 1] ?? [];
+    expect(last[0]).toBe("msb");
+    expect(last[1]).toBe("exec");
   });
 
   test("multi-step run prints execution order", () => {
@@ -156,6 +162,83 @@ echo "p        running   img"
     writeFileSync(fakeMsb, "#!/bin/sh\nexit 1\n");
     chmodSync(fakeMsb, 0o755);
     expect(querySandboxState("p")).toBe("absent");
+  });
+});
+
+describe("planStockBootstrapStages", () => {
+  test("includes docker-up stage in stock mode", () => {
+    const seq = planRunSequence({
+      config: baseConfig(),
+      image: "p:dev",
+      name: "p",
+      commandArgv: ["bash"],
+    });
+    const groups = seq.groups;
+    // Stock mode inserts docker-up after create/start.
+    const dockerStage = groups.find((g) => g.includes("docker-up"));
+    expect(dockerStage).toBeDefined();
+  });
+
+  test("includes project bootstrap stage in stock mode", () => {
+    const seq = planRunSequence({
+      config: baseConfig(),
+      image: "p:dev",
+      name: "p",
+      commandArgv: ["bash"],
+    });
+    const projectStage = seq.groups.find((g) => g.includes("mise-msb-bootstrap") && g.includes("project"));
+    expect(projectStage).toBeDefined();
+  });
+
+  test("custom mode does not add bootstrap stages", () => {
+    const config = baseConfig({
+      stock: { imageMode: "custom", customImage: "my:v1", dockerDataSize: "10G" },
+    });
+    const seq = planRunSequence({
+      config,
+      image: "my:v1",
+      name: "p",
+      commandArgv: ["bash"],
+    });
+    const dockerStage = seq.groups.find((g) => g.includes("docker-up"));
+    expect(dockerStage).toBeUndefined();
+    expect(seq.groups.length).toBe(2); // create + exec only
+  });
+
+  test("bootstrap stages appear between create and final exec", () => {
+    const seq = planRunSequence({
+      config: baseConfig(),
+      image: "p:dev",
+      name: "p",
+      commandArgv: ["bash"],
+    });
+    const groups = seq.groups;
+    const createIdx = groups.findIndex((g) => g[1] === "create");
+    const lastExecIdx = groups.length - 1;
+    expect(createIdx).toBeGreaterThanOrEqual(0);
+    expect(lastExecIdx).toBeGreaterThan(createIdx);
+    // Docker and project bootstrap should be between create and final exec.
+    const betweenGroups = groups.slice(createIdx + 1, lastExecIdx);
+    expect(betweenGroups.length).toBeGreaterThanOrEqual(2);
+    expect(betweenGroups.some((g) => g.includes("docker-up"))).toBe(true);
+    expect(betweenGroups.some((g) => g.includes("mise-msb-bootstrap"))).toBe(true);
+  });
+
+  test("preserves command arguments through bootstrap stages", () => {
+    const seq = planRunSequence({
+      config: baseConfig(),
+      image: "p:dev",
+      name: "p",
+      commandArgv: ["bun", "test", "--timeout", "5000"],
+    });
+    const execArgv = seq.groups[seq.groups.length - 1] ?? [];
+    expect(execArgv).toContain("--");
+    expect(execArgv.slice(execArgv.indexOf("--") + 1)).toEqual([
+      "bun",
+      "test",
+      "--timeout",
+      "5000",
+    ]);
   });
 });
 

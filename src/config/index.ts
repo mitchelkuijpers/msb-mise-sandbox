@@ -8,7 +8,7 @@
 import { dirname } from "node:path";
 import { findProjectConfig, loadLayers, type LoadOptions, type LoadedLayer } from "./loader.js";
 import { mergeConfigs } from "./merge.js";
-import { deriveDefaultTag, deriveProjectName } from "./naming.js";
+import { deriveProjectName } from "./naming.js";
 import { validateLayers, validateMerged } from "./validate.js";
 import type { PartialConfig, SandboxConfig } from "./types.js";
 
@@ -50,9 +50,8 @@ export async function loadConfig(options: LoadOptions = {}): Promise<ResolvedCon
   if (merged.identity.name.length === 0) {
     merged.identity.name = derivedName;
   }
-  if (merged.build.tag.length === 0) {
-    merged.build.tag = deriveDefaultTag(merged.identity.name);
-  }
+  // Image reference is no longer derived from the project name:
+  // stock mode uses the versioned stock tag; custom mode requires an explicit reference.
 
   // Validate the resolved config (e.g. CPU/memory sanity checks).
   validateMerged(merged);

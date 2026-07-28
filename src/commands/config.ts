@@ -18,7 +18,7 @@ export async function runConfigCommand(
   const printable = {
     projectRoot,
     identity: config.identity,
-    build: config.build,
+    stock: config.stock,
     runtime: config.runtime,
     workdirTarget: config.workdirTarget,
     mounts: config.mounts,

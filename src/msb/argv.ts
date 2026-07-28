@@ -13,6 +13,10 @@ import type {
   SandboxConfig,
   SecretEntry,
 } from "../config/types.js";
+import {
+  STOCK_MISE_MOUNT_TARGET,
+  STOCK_DOCKER_MOUNT_TARGET,
+} from "../stock-image/constants.js";
 
 // ---------------------------------------------------------------------------
 // `msb create` argv
@@ -79,6 +83,17 @@ export function buildCreateArgv(options: CreateOptions): string[] {
     argv.push(...mountArgv(mount));
   }
 
+  // Stock mode: inject derived persistent mounts for mise and Docker data.
+  if (config.stock.imageMode === "stock") {
+    const miseVolName = `${name}-mise-v1`;
+    const dockerVolName = `${name}-docker-data`;
+    argv.push("--mount-named", `${miseVolName}:${STOCK_MISE_MOUNT_TARGET}`);
+    argv.push(
+      "--mount-named",
+      `${dockerVolName}:${STOCK_DOCKER_MOUNT_TARGET}:kind=disk,size=${config.stock.dockerDataSize}`,
+    );
+  }
+
   // Ports (sorted by name).
   for (const name of Object.keys(config.ports).sort()) {
     const port = config.ports[name];
@@ -105,7 +120,7 @@ export function mountArgv(mount: MountEntry): string[] {
       return ["--mount-file", `${mount.source}:${target}`];
     case "disk": {
       const size = mount.size ?? "10G";
-      return ["--mount-disk", `${mount.source}:${target}:size=${size}`];
+      return ["--mount-named", `${mount.source}:${target}:kind=disk,size=${size}`];
     }
     case "named":
       return ["--mount-named", `${mount.source}:${target}`];

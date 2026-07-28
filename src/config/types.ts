@@ -19,16 +19,18 @@ export type EgressPolicy = "deny" | "allow";
 export type MemorySize = `${number}${"M" | "G"}`;
 
 // ---------------------------------------------------------------------------
-// Build settings
+// Image / Runtime mode
 // ---------------------------------------------------------------------------
 
-export interface BuildConfig {
-  /** Base image reference for `mise oci build --from`. */
-  from: string;
-  /** Local image tag (e.g. "my-project:dev"). */
-  tag: string;
-  /** Linux image used on macOS to run `mise oci build`. */
-  builderImage: string;
+export type ImageMode = "stock" | "custom";
+
+export interface StockConfig {
+  /** Image mode: "stock" (default, wrapper-managed) or "custom" (externally managed). */
+  imageMode: ImageMode;
+  /** Explicit image reference for custom mode (required when imageMode === "custom"). */
+  customImage?: string;
+  /** Disk size for the Docker data volume (default "10G"). */
+  dockerDataSize: MemorySize;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +128,7 @@ export interface IdentityConfig {
 
 export interface SandboxConfig {
   identity: IdentityConfig;
-  build: BuildConfig;
+  stock: StockConfig;
   runtime: RuntimeConfig;
   /** Workspace mount target inside the sandbox. */
   workdirTarget: string;
@@ -149,10 +151,10 @@ export interface SandboxConfig {
 // Raw layered input (before defaults are applied, with optional fields)
 // ---------------------------------------------------------------------------
 
-export interface PartialBuild {
-  from?: string;
-  tag?: string;
-  builderImage?: string;
+export interface PartialStock {
+  imageMode?: ImageMode | string;
+  customImage?: string;
+  dockerDataSize?: string;
 }
 
 export interface PartialRuntime {
@@ -200,7 +202,7 @@ export interface PartialIdentity {
  * Every field is optional because the layers may omit sections entirely.
  */
 export interface PartialConfig {
-  build?: PartialBuild;
+  stock?: PartialStock;
   runtime?: PartialRuntime;
   workdir?: string;
   mounts?: Record<string, PartialMount>;
@@ -219,10 +221,9 @@ export interface PartialConfig {
 
 export const BUILTIN_DEFAULTS: SandboxConfig = {
   identity: { name: "", workdir: "/workspace" },
-  build: {
-    from: "ubuntu:24.04",
-    tag: "",
-    builderImage: "ubuntu:24.04",
+  stock: {
+    imageMode: "stock",
+    dockerDataSize: "10G",
   },
   runtime: { cpus: 4, memory: "8G" },
   workdirTarget: "/workspace",

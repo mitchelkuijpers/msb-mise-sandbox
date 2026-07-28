@@ -21,7 +21,7 @@ The CLI SHALL provide `setup`, `create`, `run`, `shell`, `exec`, `start`, `stop`
 - **WHEN** the user runs `mise-msb exec -- bun test --timeout 5000`
 - **THEN** the wrapper executes the applicable stock bootstrap stages followed by `msb exec <configured-name> -- bun test --timeout 5000` without reparsing the command arguments
 
-#### Scenario: Existing stopped stock sandbox is started by run
+#### Scenario: Existing stopped sandbox is started by run
 - **WHEN** `mise-msb run -- bun test` targets an existing stopped stock sandbox
 - **THEN** the wrapper starts it, ensures Docker and mise bootstrap, and executes `bun test`
 
@@ -41,7 +41,7 @@ Lifecycle and setup commands SHALL support `--print` and the alias `--dry-run`. 
 - **WHEN** a secret references `SERVICE_TOKEN` for `api.example.com`
 - **THEN** output contains `--secret SERVICE_TOKEN@api.example.com`, contains no value of that variable, and no subprocess runs
 
-#### Scenario: Multi-step stock run prints execution order
+#### Scenario: Multi-step run prints execution order
 - **WHEN** stock `run --print` would start, bootstrap, and execute in a sandbox
 - **THEN** output shows `msb start`, Docker readiness, personal bootstrap when configured, project bootstrap, and final `msb exec` in execution order
 

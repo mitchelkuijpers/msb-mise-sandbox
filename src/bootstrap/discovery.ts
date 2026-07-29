@@ -1,4 +1,10 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
@@ -41,11 +47,11 @@ export function configurePersonalBootstrap(
   const personal = discoverPersonalBootstrap(homeDir);
   if (personal === null) return null;
 
+  const source = realpathSync(personal.dir);
   config.mounts[PERSONAL_BOOTSTRAP_MOUNT_NAME] = {
     kind: "dir",
-    source: personal.dir,
+    source,
     target: PERSONAL_MOUNT_TARGET,
-    options: "ro",
   };
   config.env[PERSONAL_GLOBAL_CONFIG_ENV] = `${PERSONAL_MOUNT_TARGET}/mise.toml`;
   return personal;

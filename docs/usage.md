@@ -27,7 +27,7 @@ generated `msb` argv without executing it. Multi-step commands like
 # Build and load the local stock Ubuntu image (one-time setup)
 mise-msb setup
 
-# Create a stock-mode sandbox (Docker + mise bootstrap automatically)
+# Create a stock-mode sandbox (Docker + personal bootstrap automatically)
 mise-msb create my-project
 
 # Run commands
@@ -40,7 +40,8 @@ mise-msb shell my-project
 Sandboxes never mount host paths implicitly, so a fresh sandbox starts with
 an **empty `/workspace`**. Almost every project wants its directory
 live-mounted there — stock sandboxes default `--workdir` to `/workspace` and
-the bootstrap runs `mise install` in it. Add this to your project's
+the personal bootstrap runs `mise bootstrap` in it, while project tools still
+go through a separate `mise install` stage. Add this to your project's
 `.sandbox.toml`:
 
 ```toml
@@ -93,7 +94,7 @@ customImage = "my-project:dev" # required when imageMode = "custom"
 dockerDataSize = "10G"         # Docker data volume size (M or G suffix)
 ```
 
-Stock mode uses the wrapper's versioned local stock image (`mise-msb-base:v2`),
+Stock mode uses the wrapper's versioned local stock image (`mise-msb-base:v3`),
 injects persistent named volumes for mise (`<sandbox>-mise-v1:/mise`) and
 Docker data (`<sandbox>-docker-data:/var/lib/docker`), and runs Docker
 readiness and mise bootstrap automatically.
@@ -276,14 +277,20 @@ Optional per-developer mise bootstrap at `~/.config/mise-msb/bootstrap/mise.toml
 ripgrep = "latest"
 
 [bootstrap]
-packages = ["fzf"]
 dotfiles = ["~/.gitconfig"]
 hooks = ["setup-personal-aliases"]
+
+[bootstrap.packages]
+"apt:fzf" = "latest"
 ```
 
-When present, the wrapper mounts the containing directory read-only at
-`/etc/mise-msb/personal`, sets `MISE_GLOBAL_CONFIG_FILE`, and runs
-personal bootstrap before project tool installation.
+When present, the wrapper mounts the containing directory writable at
+`/etc/mise-msb/personal`, sets `MISE_GLOBAL_CONFIG_FILE`, and runs personal
+bootstrap before project tool installation. The personal stage uses `mise bootstrap`
+so it applies bootstrap directives and then runs the tools phase too. That means
+`mise use -g` inside a sandbox writes through to the host bootstrap file, and
+guest-created sibling bootstrap files propagate to other sandboxes on their next
+invocation through the existing content-hash check.
 
 Personal bootstrap content is content-hashed for change detection. A new
 sandbox or changed bootstrap content re-runs full personal provisioning;
@@ -297,13 +304,24 @@ unchanged warm-start invocations skip it.
 saves the resulting archive, and loads it with `msb image load`. Warm setup
 skips when the expected generation is already loaded. `setup --force` rebuilds.
 
+### Migrating to stock image v3
+
+To pick up the fixed personal bootstrap helper and PATH:
+
+1. Run `mise-msb setup`.
+2. Stop, remove, and recreate existing stock sandboxes.
+
+Named mise and Docker volumes persist across recreation, but files left only in
+the writable sandbox layer do not.
+
 ### Bootstrap Stages
 
 After `create` or `start`, stock mode runs these stages in order:
 
 1. **Docker readiness** — `docker-up` starts dockerd and waits for success
 2. **Personal bootstrap** — runs `mise-msb-bootstrap personal <hash>` when
-   personal configuration exists (skips on unchanged warm-start)
+   personal configuration exists (skips on unchanged warm-start) and performs
+   the full personal `mise bootstrap`, including tools
 3. **Project bootstrap** — `mise install --locked` when `mise.lock` exists,
    otherwise `mise install`
 

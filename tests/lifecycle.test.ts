@@ -198,7 +198,6 @@ describe("planStockBootstrapStages", () => {
       config,
       image: "my:v1",
       name: "p",
-      commandArgv: ["bash"],
     });
     const dockerStage = seq.groups.find((g) => g.includes("docker-up"));
     expect(dockerStage).toBeUndefined();

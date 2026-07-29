@@ -105,9 +105,13 @@ allowed destination.
 Personal bootstrap at `~/.config/mise-msb/bootstrap/mise.toml` runs as
 trusted operator-owned code inside the microVM. The wrapper:
 
-- **Mounts the bootstrap directory read-only** at `/etc/mise-msb/personal`
-- **Never reads file contents** — only hashes paths and contents for
-  change detection
+- **Mounts the bootstrap directory writable by design** at
+  `/etc/mise-msb/personal`
+- **Allows sandbox code to edit trusted bootstrap content** so `mise use -g`
+  and sibling bootstrap files can be updated in place
+- **Never reads file contents directly** — it only hashes paths and contents
+  for change detection, so guest-originated edits still trigger the normal
+  hash-based re-run path
 - **Runs bootstrap from a neutral directory** outside the project workspace
 - **Executes personal hooks separately from project hooks** — project
   configuration is not loaded during the personal stage

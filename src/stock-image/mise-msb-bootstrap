@@ -28,7 +28,7 @@ case "$COMMAND" in
         fi
         if [ -n "${MISE_GLOBAL_CONFIG_FILE:-}" ] && [ -f "$MISE_GLOBAL_CONFIG_FILE" ]; then
             mkdir -p /tmp/mise-msb-personal-bootstrap
-            mise install --cd /tmp/mise-msb-personal-bootstrap
+            mise bootstrap --cd /tmp/mise-msb-personal-bootstrap --yes
         fi
         mkdir -p "$MARKER_BASE"
         echo -n "$HASH" > "$MARKER"

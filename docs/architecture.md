@@ -83,8 +83,8 @@ stage failure stops the sequence and propagates the exit code.
 Optional per-developer bootstrap at `~/.config/mise-msb/bootstrap/mise.toml`:
 
 ```
-~/.config/mise-msb/bootstrap/mise.toml  →  mounted at /etc/mise-msb/personal (ro)
-                                             MISE_GLOBAL_CONFIG_FILE=/etc/mise-msb/personal/mise.toml
+~/.config/mise-msb/bootstrap/mise.toml  →  mounted at /etc/mise-msb/personal (rw)
+                                              MISE_GLOBAL_CONFIG_FILE=/etc/mise-msb/personal/mise.toml
 ```
 
 Content-hashed change detection avoids re-running personal provisioning

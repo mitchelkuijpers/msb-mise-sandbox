@@ -1,5 +1,5 @@
-// Generation 2: adds openssh-client (ssh-keygen) for sandbox commit signing.
-export const STOCK_IMAGE_GENERATION = 2;
+// Generation 3: fixes personal bootstrap and exposes /root/.local/bin on PATH.
+export const STOCK_IMAGE_GENERATION = 3;
 
 export const STOCK_IMAGE_TAG = `mise-msb-base:v${STOCK_IMAGE_GENERATION}`;
 

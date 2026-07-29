@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -48,7 +54,7 @@ describe("discoverPersonalBootstrap", () => {
 });
 
 describe("configurePersonalBootstrap", () => {
-  test("adds the read-only mount and global mise config in stock mode", () => {
+  test("adds the writable mount and global mise config in stock mode", () => {
     const home = join(tmpdir(), `bootstrap-config-${Date.now()}`);
     const bootstrapDir = join(home, ".config", "mise-msb", "bootstrap");
     mkdirSync(bootstrapDir, { recursive: true });
@@ -59,14 +65,34 @@ describe("configurePersonalBootstrap", () => {
 
     expect(config.mounts[PERSONAL_BOOTSTRAP_MOUNT_NAME]).toEqual({
       kind: "dir",
-      source: bootstrapDir,
+      source: realpathSync(bootstrapDir),
       target: "/etc/mise-msb/personal",
-      options: "ro",
     });
     expect(config.env["MISE_GLOBAL_CONFIG_FILE"]).toBe(
       "/etc/mise-msb/personal/mise.toml",
     );
     rmSync(home, { recursive: true, force: true });
+  });
+
+  test("canonicalizes a symlinked bootstrap source path", () => {
+    const realHome = join(tmpdir(), `bootstrap-real-${Date.now()}`);
+    const linkedHome = join(tmpdir(), `bootstrap-link-${Date.now()}`);
+    const bootstrapDir = join(realHome, ".config", "mise-msb", "bootstrap");
+    mkdirSync(bootstrapDir, { recursive: true });
+    writeFileSync(join(bootstrapDir, "mise.toml"), '[tools]\nripgrep = "latest"\n');
+    symlinkSync(realHome, linkedHome);
+
+    const config = mergeConfigs([]);
+    configurePersonalBootstrap(config, linkedHome);
+
+    expect(config.mounts[PERSONAL_BOOTSTRAP_MOUNT_NAME]).toEqual({
+      kind: "dir",
+      source: realpathSync(bootstrapDir),
+      target: "/etc/mise-msb/personal",
+    });
+
+    rmSync(linkedHome, { force: true });
+    rmSync(realHome, { recursive: true, force: true });
   });
 
   test("does not add personal bootstrap to custom images", () => {

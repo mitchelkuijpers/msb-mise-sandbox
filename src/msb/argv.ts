@@ -17,6 +17,25 @@ import {
   STOCK_MISE_MOUNT_TARGET,
   STOCK_DOCKER_MOUNT_TARGET,
 } from "../stock-image/constants.js";
+import {
+  GIT_CONFIG_GLOBAL_ENV,
+  GUEST_GITCONFIG_PATH,
+  GUEST_HOST_GITCONFIG_PATH,
+  GUEST_KEY_PATH,
+  GUEST_PUBKEY_PATH,
+} from "../signing/paths.js";
+import { writeGuestGitconfig, type GitIdentity } from "../signing/gitconfig.js";
+import { type ValidatedSigningKey } from "../signing/validate.js";
+import { expandHome } from "../config/merge.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+/**
+ * Prefix microsandbox uses for source-based secret placeholders. The
+ * full placeholder is `$MSB_<SOURCE_ENV>` and is substituted only at
+ * the allowed TLS boundary; the wrapper never resolves the value.
+ */
+export const MSB_PLACEHOLDER_PREFIX = "$MSB_";
 
 // ---------------------------------------------------------------------------
 // `msb create` argv
@@ -33,11 +52,23 @@ export interface CreateOptions {
   replace?: boolean;
   /** Optional workdir override (defaults to config.workdirTarget). */
   workdir?: string;
+  /** Optional home dir override (used in tests; for host gitconfig detection). */
+  homeDir?: string;
+  /**
+   * Validated signing key pair when signing is enabled, undefined otherwise.
+   * Used for emitting canonical mount paths.
+   */
+  signingKey?: ValidatedSigningKey;
+  /**
+   * Committer identity pinned into the generated guest gitconfig when
+   * signing is enabled (resolved by the caller via hostGitIdentity()).
+   */
+  gitIdentity?: GitIdentity;
 }
 
 /** Build the canonical `msb create <image> --name <name> ...` argv. */
 export function buildCreateArgv(options: CreateOptions): string[] {
-  const { config, name, image, replace, workdir } = options;
+  const { config, name, image, replace, workdir, signingKey } = options;
   const argv: string[] = ["msb", "create", image, "--name", name];
 
   argv.push("--cpus", String(config.runtime.cpus));
@@ -52,9 +83,30 @@ export function buildCreateArgv(options: CreateOptions): string[] {
     argv.push("--replace");
   }
 
-  // Environment entries (sorted by key for determinism).
+  // Compute secret bridge keys: secrets whose guest name differs from
+  // their source. These produce a literal `$MSB_<SOURCE_ENV>` placeholder
+  // and are authoritative over any conflicting ordinary env entry.
+  const bridgeKeys = new Set<string>();
+  for (const [secretName, entry] of Object.entries(config.secrets)) {
+    if (entry === undefined) continue;
+    if (entry.from.length > 0 && secretName !== entry.from) {
+      bridgeKeys.add(secretName);
+    }
+  }
+
+  // Environment entries (sorted by key for determinism). Secret guest
+  // names that have a bridge win authoritatively over any conflicting
+  // ordinary env entry.
   for (const key of Object.keys(config.env).sort()) {
+    if (bridgeKeys.has(key)) continue;
     argv.push("--env", `${key}=${config.env[key]}`);
+  }
+
+  // Bridge entries for secrets with differing guest/source names.
+  for (const key of [...bridgeKeys].sort()) {
+    const entry = config.secrets[key];
+    if (entry === undefined) continue;
+    argv.push("--env", `${key}=${MSB_PLACEHOLDER_PREFIX}${entry.from}`);
   }
 
   // Labels (sorted by key).
@@ -76,10 +128,21 @@ export function buildCreateArgv(options: CreateOptions): string[] {
     argv.push(...secretArgv(entry));
   }
 
-  // Mounts (sorted by name).
+  // Mounts (sorted by name). When signing is enabled, a mounted host
+  // ~/.gitconfig is retargeted to the neutral include path so the
+  // generated gitconfig owns the guest's global slot (design D2).
+  const signingEnabled = config.signing.enabled &&
+    config.signing.key !== undefined && config.signing.key.length > 0;
+  const homeDir = options.homeDir ?? homedir();
+  let hostGitconfigMounted = false;
   for (const name of Object.keys(config.mounts).sort()) {
     const mount = config.mounts[name];
     if (mount === undefined) continue;
+    if (signingEnabled && isHostGitconfigMount(mount, homeDir)) {
+      hostGitconfigMounted = true;
+      argv.push("--mount-file", `${mount.source}:${GUEST_HOST_GITCONFIG_PATH}:ro`);
+      continue;
+    }
     argv.push(...mountArgv(mount));
   }
 
@@ -92,6 +155,28 @@ export function buildCreateArgv(options: CreateOptions): string[] {
       "--mount-named",
       `${dockerVolName}:${STOCK_DOCKER_MOUNT_TARGET}:kind=disk,size=${config.stock.dockerDataSize}`,
     );
+  }
+
+  // Signing: read-only key mounts, generated gitconfig via --copy, and
+  // GIT_CONFIG_GLOBAL. Key material is referenced by path only.
+  if (signingEnabled) {
+    if (signingKey) {
+      argv.push("--mount-file", `${signingKey.privateKeyPath}:${GUEST_KEY_PATH}:ro`);
+      argv.push(
+        "--mount-file",
+        `${signingKey.publicKeyPath}:${GUEST_PUBKEY_PATH}:ro`,
+      );
+    } else {
+      // Direct argv tests do not run command-level signing validation.
+      const keyPath = config.signing.key;
+      if (keyPath !== undefined) {
+        argv.push("--mount-file", `${keyPath}:${GUEST_KEY_PATH}:ro`);
+        argv.push("--mount-file", `${keyPath}.pub:${GUEST_PUBKEY_PATH}:ro`);
+      }
+    }
+    const gitconfigTmp = writeGuestGitconfig(name, hostGitconfigMounted, options.gitIdentity ?? {});
+    argv.push("--copy", `${gitconfigTmp}:${GUEST_GITCONFIG_PATH}`);
+    argv.push("--env", `${GIT_CONFIG_GLOBAL_ENV}=${GUEST_GITCONFIG_PATH}`);
   }
 
   // Ports (sorted by name).
@@ -107,6 +192,12 @@ export function buildCreateArgv(options: CreateOptions): string[] {
 // ---------------------------------------------------------------------------
 // `msb create` argv helpers
 // ---------------------------------------------------------------------------
+
+/** True when a file mount sources the host's ~/.gitconfig. */
+export function isHostGitconfigMount(mount: MountEntry, homeDir: string = homedir()): boolean {
+  if (mount.kind !== "file") return false;
+  return expandHome(mount.source, homeDir) === join(homeDir, ".gitconfig");
+}
 
 /** Translate a MountEntry to one of the canonical `--mount-*` argv pairs. */
 export function mountArgv(mount: MountEntry): string[] {

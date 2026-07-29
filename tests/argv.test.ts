@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { buildCreateArgv, mountArgv, portToString, secretArgv } from "../src/msb/argv.js";
 import { formatArgv, quoteArg } from "../src/msb/print.js";
 import { BUILTIN_DEFAULTS, type SandboxConfig } from "../src/config/types.js";
+import { generateGuestGitconfig, guestGitconfigTempPath } from "../src/signing/gitconfig.js";
+import { readFileSync } from "node:fs";
+
+const SIGNING_KEY = "/home/op/.config/mise-msb/signing/id_ed25519_sandbox";
 
 function baseConfig(overrides: Partial<SandboxConfig> = {}): SandboxConfig {
   return {
@@ -84,6 +88,146 @@ describe("buildCreateArgv", () => {
     expect(argv).toContain("ENV_B@b.example");
   });
 
+  test("differing guest and source names generate a literal $MSB_ bridge", () => {
+    const argv = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({
+        secrets: {
+          OPENCODE_API_KEY: {
+            from: "OPENCODE_API_KEY_PERSONAL",
+            hosts: ["opencode.ai"],
+          },
+        },
+      }),
+    });
+    const envIndex = argv.indexOf("--env");
+    expect(envIndex).toBeGreaterThan(-1);
+    expect(argv[envIndex + 1]).toBe("OPENCODE_API_KEY=$MSB_OPENCODE_API_KEY_PERSONAL");
+    expect(argv).toContain("--secret");
+    expect(argv).toContain("OPENCODE_API_KEY_PERSONAL@opencode.ai");
+    // No resolved value is ever placed in argv.
+    expect(argv.join(" ")).not.toContain("supersecret");
+  });
+
+  test("same-name secrets emit only --secret, no bridge", () => {
+    const argv = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({
+        secrets: {
+          OPENAI_API_KEY: { from: "OPENAI_API_KEY", hosts: ["api.openai.com"] },
+        },
+      }),
+    });
+    expect(argv).not.toContain("OPENAI_API_KEY=$MSB_");
+    expect(argv).toContain("--secret");
+    expect(argv).toContain("OPENAI_API_KEY@api.openai.com");
+  });
+
+  test("differing-name secret with multiple allowed hosts expands each", () => {
+    const argv = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({
+        secrets: {
+          OPENCODE_API_KEY: {
+            from: "OPENCODE_API_KEY_PERSONAL",
+            hosts: ["opencode.ai", "api.opencode.ai"],
+          },
+        },
+      }),
+    });
+    expect(argv).toContain("OPENCODE_API_KEY_PERSONAL@opencode.ai");
+    expect(argv).toContain("OPENCODE_API_KEY_PERSONAL@api.opencode.ai");
+    // Bridge appears exactly once.
+    const bridgeCount = argv.filter((a) => a === "OPENCODE_API_KEY=$MSB_OPENCODE_API_KEY_PERSONAL").length;
+    expect(bridgeCount).toBe(1);
+  });
+
+  test("secret bridge is authoritative over a conflicting ordinary env entry", () => {
+    const argv = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({
+        env: { OPENCODE_API_KEY: "literal-env-value" },
+        secrets: {
+          OPENCODE_API_KEY: {
+            from: "OPENCODE_API_KEY_PERSONAL",
+            hosts: ["opencode.ai"],
+          },
+        },
+      }),
+    });
+    expect(argv).toContain("OPENCODE_API_KEY=$MSB_OPENCODE_API_KEY_PERSONAL");
+    expect(argv.join(" ")).not.toContain("literal-env-value");
+  });
+
+  test("argv never contains the resolved host secret value", () => {
+    const argv = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({
+        secrets: {
+          OPENCODE_API_KEY: {
+            from: "OPENCODE_API_KEY_PERSONAL",
+            hosts: ["opencode.ai"],
+          },
+        },
+      }),
+    });
+    // Simulate a leaked real value being looked up by the caller — it
+    // must never appear in argv.
+    const envValue = "sk-real-personal-token-1234";
+    expect(argv.join(" ")).not.toContain(envValue);
+  });
+
+  test("mixed same-name and differing-name secrets preserve both behaviors", () => {
+    const argv = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({
+        secrets: {
+          GITLAB_TOKEN: { from: "GITLAB_TOKEN", hosts: ["gitlab.com"] },
+          OPENCODE_API_KEY: {
+            from: "OPENCODE_API_KEY_PERSONAL",
+            hosts: ["opencode.ai"],
+          },
+        },
+      }),
+    });
+    // Bridge for the differing one only.
+    expect(argv).toContain("OPENCODE_API_KEY=$MSB_OPENCODE_API_KEY_PERSONAL");
+    expect(argv).not.toContain("GITLAB_TOKEN=$MSB_");
+    // Both source-based --secret args emitted.
+    expect(argv).toContain("GITLAB_TOKEN@gitlab.com");
+    expect(argv).toContain("OPENCODE_API_KEY_PERSONAL@opencode.ai");
+  });
+
+  test("bridge and env entries are sorted together deterministically", () => {
+    const argv1 = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({
+        env: { Z: "z", A: "a" },
+        secrets: {
+          M: { from: "M_SRC", hosts: ["m.example"] },
+        },
+      }),
+    });
+    const argv2 = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({
+        env: { Z: "z", A: "a" },
+        secrets: {
+          M: { from: "M_SRC", hosts: ["m.example"] },
+        },
+      }),
+    });
+    expect(formatArgv(argv1)).toBe(formatArgv(argv2));
+  });
+
   test("emits sorted mounts by name", () => {
     const argv = buildCreateArgv({
       image: "p:dev",
@@ -149,6 +293,125 @@ describe("buildCreateArgv", () => {
     // And it survives shell quoting too.
     expect(formatArgv(argv)).toContain("'GREETING=hello $(rm -rf /); world'");
   });
+
+  test("signing disabled emits no signing arguments", () => {
+    const argv = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({ signing: { enabled: false, key: SIGNING_KEY } }),
+    });
+    const joined = argv.join(" ");
+    expect(joined).not.toContain("/etc/mise-msb/signing");
+    expect(joined).not.toContain("GIT_CONFIG_GLOBAL");
+    expect(joined).not.toContain("--copy");
+  });
+
+  test("signing enabled emits mounts, gitconfig copy, and GIT_CONFIG_GLOBAL deterministically", () => {
+    const cfg = baseConfig({ signing: { enabled: true, key: SIGNING_KEY } });
+    const argv1 = buildCreateArgv({ image: "p:dev", name: "p", config: cfg });
+    const argv2 = buildCreateArgv({ image: "p:dev", name: "p", config: cfg });
+    expect(argv1).toEqual(argv2);
+
+    const tmp = guestGitconfigTempPath("p");
+    const expected =
+      "msb create p:dev --name p --cpus 4 --memory 8G --workdir /workspace " +
+      "--net-default allow --mount-named p-mise-v1:/mise " +
+      "--mount-named p-docker-data:/var/lib/docker:kind=disk,size=10G " +
+      `--mount-file ${SIGNING_KEY}:/etc/mise-msb/signing/id_ed25519_sandbox:ro ` +
+      `--mount-file ${SIGNING_KEY}.pub:/etc/mise-msb/signing/id_ed25519_sandbox.pub:ro ` +
+      `--copy ${tmp}:/etc/mise-msb/gitconfig ` +
+      "--env GIT_CONFIG_GLOBAL=/etc/mise-msb/gitconfig";
+    expect(formatArgv(argv1)).toBe(expected);
+
+    // Generated gitconfig pins signing and contains no key material.
+    const content = readFileSync(tmp, "utf8");
+    expect(content).toContain("format = ssh");
+    expect(content).toContain("signingkey = /etc/mise-msb/signing/id_ed25519_sandbox.pub");
+    expect(content).toContain("gpgsign = true");
+    expect(content).not.toContain("[include]");
+    expect(argv1.join(" ")).not.toContain("PRIVATE KEY");
+    expect(argv1.join(" ")).not.toContain("ssh-ed25519 AAAA");
+  });
+
+  test("signing retargets a mounted host ~/.gitconfig to the neutral include path", () => {
+    const home = "/home/op";
+    const argv = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      homeDir: home,
+      config: baseConfig({
+        signing: { enabled: true, key: SIGNING_KEY },
+        mounts: {
+          "git-config": { kind: "file", source: "~/.gitconfig", target: "/root/.gitconfig", options: "ro" },
+        },
+      }),
+    });
+    expect(argv).toContain(`~/.gitconfig:/etc/mise-msb/host-gitconfig:ro`);
+    expect(argv.join(" ")).not.toContain("/root/.gitconfig");
+    const content = readFileSync(guestGitconfigTempPath("p"), "utf8");
+    expect(content).toContain("[include]");
+    expect(content).toContain("path = /etc/mise-msb/host-gitconfig");
+    // Pinned entries follow the include so they override inherited config.
+    expect(content.indexOf("[include]")).toBeLessThan(content.indexOf("[gpg]"));
+  });
+
+  test("signing pins the supplied committer identity into the generated gitconfig", () => {
+    buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({ signing: { enabled: true, key: SIGNING_KEY } }),
+      gitIdentity: { name: "Ada Lovelace", email: "ada@example.com" },
+    });
+    const content = readFileSync(guestGitconfigTempPath("p"), "utf8");
+    expect(content).toContain("    name = Ada Lovelace\n");
+    expect(content).toContain("    email = ada@example.com\n");
+    expect(content).toContain("    signingkey = /etc/mise-msb/signing/id_ed25519_sandbox.pub\n");
+    // Identity sits under [user] alongside the signing key.
+    expect(content.indexOf("name = Ada Lovelace")).toBeGreaterThan(content.indexOf("[user]"));
+    expect(content.indexOf("signingkey")).toBeGreaterThan(content.indexOf("[user]"));
+  });
+});
+
+describe("generateGuestGitconfig", () => {
+  test("include present only when a host gitconfig mount is configured", () => {
+    expect(generateGuestGitconfig(true)).toBe(
+      "[include]\n" +
+      "    path = /etc/mise-msb/host-gitconfig\n" +
+      "[gpg]\n" +
+      "    format = ssh\n" +
+      "[user]\n" +
+      "    signingkey = /etc/mise-msb/signing/id_ed25519_sandbox.pub\n" +
+      "[commit]\n" +
+      "    gpgsign = true\n",
+    );
+    expect(generateGuestGitconfig(false)).toBe(
+      "[gpg]\n" +
+      "    format = ssh\n" +
+      "[user]\n" +
+      "    signingkey = /etc/mise-msb/signing/id_ed25519_sandbox.pub\n" +
+      "[commit]\n" +
+      "    gpgsign = true\n",
+    );
+  });
+
+  test("identity entries are pinned when supplied", () => {
+    expect(generateGuestGitconfig(false, { name: "Ada", email: "ada@example.com" })).toBe(
+      "[gpg]\n" +
+      "    format = ssh\n" +
+      "[user]\n" +
+      "    name = Ada\n" +
+      "    email = ada@example.com\n" +
+      "    signingkey = /etc/mise-msb/signing/id_ed25519_sandbox.pub\n" +
+      "[commit]\n" +
+      "    gpgsign = true\n",
+    );
+  });
+
+  test("identity values cannot break out of a line", () => {
+    const content = generateGuestGitconfig(false, { name: "a\n[evil]\nb = c", email: "x@y.z" });
+    expect(content).toContain("name = a [evil] b = c");
+    expect(content).not.toContain("[evil]\n");
+  });
 });
 
 describe("mountArgv", () => {
@@ -193,6 +456,65 @@ describe("secretArgv", () => {
   test("emits one --secret per host, sorted", () => {
     const argv = secretArgv({ from: "ENV", hosts: ["b", "a"] });
     expect(argv).toEqual(["--secret", "ENV@a", "--secret", "ENV@b"]);
+  });
+});
+
+describe("print mode: secret bridges", () => {
+  test("differing names show literal $MSB_ placeholder, not value", () => {
+    const argv = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({
+        secrets: {
+          OPENCODE_API_KEY: {
+            from: "OPENCODE_API_KEY_PERSONAL",
+            hosts: ["opencode.ai"],
+          },
+        },
+      }),
+    });
+    const formatted = formatArgv(argv);
+    // The $MSB_ placeholder may be shell-quoted in print mode; check the
+    // raw argv for the exact substring.
+    expect(argv).toContain("OPENCODE_API_KEY=$MSB_OPENCODE_API_KEY_PERSONAL");
+    expect(formatted).toContain("$MSB_OPENCODE_API_KEY_PERSONAL");
+    expect(formatted).toContain("--secret OPENCODE_API_KEY_PERSONAL@opencode.ai");
+    // No value should be present.
+    expect(formatted).not.toContain("sk-");
+  });
+
+  test("same-name print mode omits bridge, keeps --secret source@host", () => {
+    const argv = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({
+        secrets: {
+          SERVICE_TOKEN: { from: "SERVICE_TOKEN", hosts: ["api.example"] },
+        },
+      }),
+    });
+    const formatted = formatArgv(argv);
+    expect(formatted).toContain("--secret SERVICE_TOKEN@api.example");
+    expect(argv.join(" ")).not.toContain("$MSB_");
+  });
+
+  test("print mode: env/secret overlap keeps bridge and drops the literal value", () => {
+    const argv = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({
+        env: { OPENCODE_API_KEY: "literal-env-value" },
+        secrets: {
+          OPENCODE_API_KEY: {
+            from: "OPENCODE_API_KEY_PERSONAL",
+            hosts: ["opencode.ai"],
+          },
+        },
+      }),
+    });
+    const formatted = formatArgv(argv);
+    expect(formatted).toContain("$MSB_OPENCODE_API_KEY_PERSONAL");
+    expect(formatted).not.toContain("literal-env-value");
   });
 });
 

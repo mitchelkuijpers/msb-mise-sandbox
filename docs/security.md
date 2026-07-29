@@ -1,5 +1,46 @@
 # Security
 
+## Sandbox Commit Signing
+
+`[signing]` is the **single accepted exception** to the rule that key
+material is never readable by guest code. When enabled, a dedicated,
+per-user, passphrase-less ed25519 private key is mounted read-only into
+the sandbox so that guest `git commit` can produce forge-verifiable
+signatures without any agent forwarding.
+
+The key grants **commit-signing capability only, never authentication**,
+by construction:
+
+- **Location invariant** — the key must resolve (symlinks included) to a
+  path under the wrapper-owned directory `~/.config/mise-msb/signing/`.
+  No config layer — including a hostile committed `.sandbox.toml` — can
+  point the feature at an authentication key such as `~/.ssh/id_ed25519`;
+  validation fails closed before any `msb` invocation.
+- **Guest placement outside `~/.ssh`** — the keypair is mounted at
+  `/etc/mise-msb/signing/`, so no guest tool picks it up by convention
+  for authentication.
+- **Mount-only delivery** — key material travels via read-only
+  `--mount-file` entries only, never `--copy`, `--env`, or argv, so it
+  never enters the guest writable layer and cannot ride along in an
+  `msb snapshot create/export`. The only `--copy` artifact is the
+  generated gitconfig, which contains paths and identity values only.
+- **Forge-registered as a signing key** — the public key is registered
+  with the forge as an SSH *signing* key, which grants no SSH access.
+
+The accepted residual risk: guest code can sign arbitrary commits as the
+operator while the sandbox exists. This is bounded by the sandbox's
+existing act-as-operator capability (TLS-injected forge tokens) and by
+the revocation procedure below.
+
+### Revocation runbook
+
+1. **Remove the public key from the forge** (GitHub: Settings → SSH and
+   GPG keys; GitLab: Preferences → SSH Keys). Signatures made with the
+   key stop verifying as trusted immediately.
+2. **Delete the host signing directory contents**:
+   `rm -rf ~/.config/mise-msb/signing/` (and remove or regenerate with
+   `mise-msb signing init` if you want signing again).
+
 ## Secret Configuration
 
 The wrapper's secret configuration contains **references only** — never
@@ -7,6 +48,14 @@ values. Each entry in `[secrets.<name>]` declares:
 
 - `from` — a host environment variable name (e.g. `GITLAB_TOKEN`).
 - `hosts` — a list of allowed destination hosts.
+
+The table key (e.g. `GITLAB_TOKEN`) is the **guest-facing** environment
+variable name expected by tools inside the sandbox. The `from` field
+identifies the **host-side** variable microsandbox reads when
+substituting TLS-bound requests. When the two differ, the wrapper
+generates a literal `$MSB_<SOURCE_ENV>` bridge so the guest tool can
+read the value under the conventional guest variable name without ever
+seeing the real value.
 
 The wrapper:
 
@@ -16,23 +65,40 @@ The wrapper:
 2. **Emits source-based secret arguments.** Each secret produces one
    `--secret FROM@HOST` argument per allowed host. `msb` reads the value
    from its inherited host environment at sandbox start time.
-3. **Refuses inline values.** `msb` rejects `FROM=VALUE@HOST` syntax; the
+3. **Bridges differing guest/source names with a literal placeholder.**
+   When `secrets.<guest>.from != <guest>`, the wrapper emits
+   `--env <GUEST>=$MSB_<FROM>`. The placeholder is a literal token; the
+   wrapper never resolves it to a value and never places a real secret
+   in argv.
+4. **Treats the secret mapping as authoritative over `[env]`.** If an
+   ordinary env entry shares the same key as a secret guest name, the
+   secret bridge replaces it in argv. The real value never enters the
+   command line via either path.
+5. **Refuses inline values.** `msb` rejects `FROM=VALUE@HOST` syntax; the
    wrapper never attempts to construct it.
 
 ```toml
-[secrets.GITLAB_TOKEN]
-from = "GITLAB_TOKEN"
-hosts = ["gitlab.com"]
+[secrets.OPENCODE_API_KEY]
+from = "OPENCODE_API_KEY_PERSONAL"
+hosts = ["opencode.ai"]
 ```
 
 emits:
 
 ```
-msb create ... --secret GITLAB_TOKEN@gitlab.com ...
+msb create ... \
+  --env OPENCODE_API_KEY=$MSB_OPENCODE_API_KEY_PERSONAL \
+  --secret OPENCODE_API_KEY_PERSONAL@opencode.ai ...
 ```
 
 The microsandbox runtime substitutes the real value into TLS connections
-to `gitlab.com` only. Connections to other hosts never see the secret.
+to `opencode.ai` only. Connections to other hosts never see the secret.
+
+The source-named placeholder (`$MSB_OPENCODE_API_KEY_PERSONAL`) is also
+visible in the guest environment by virtue of the `--secret` argument.
+Both the guest alias and the source placeholder hold the same literal
+token until the microsandbox TLS proxy substitutes the real value at the
+allowed destination.
 
 ## Personal Bootstrap Security
 
@@ -129,9 +195,10 @@ secrets themselves.
 
 `--print` outputs `msb` argv arrays formatted for copy-paste. Secret
 arguments contain only `FROM@HOST` (source variable name + allowed
-host) — never the secret value. There is no `--no-redact` escape hatch.
-Personal bootstrap hashes and mount sources are printable; file contents
-are never read or printed.
+host) and, when the guest and source names differ, the literal
+`$MSB_<SOURCE_ENV>` placeholder bridge — never the secret value. There
+is no `--no-redact` escape hatch. Personal bootstrap hashes and mount
+sources are printable; file contents are never read or printed.
 
 ## Installation Safety
 

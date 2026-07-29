@@ -48,7 +48,7 @@ design and verified by unit tests in `tests/merge.test.ts`.
 ```
 ┌──────────────────────────────────────┐
 │ mise-msb setup                       │
-│   → docker build -t mise-msb-base:v1 │
+│   → docker build -t mise-msb-base:v{N}│
 │   → docker save -o <archive>         │
 │   → msb image load --input <archive> │
 └──────────────────────────────────────┘
@@ -64,7 +64,7 @@ common prerequisites, and versioned runtime helpers.
 ```
 mise-msb create <name>
     ↓
-msb create mise-msb-base:v1 --name <name> --mount-named <name>-mise-v1:/mise ...
+msb create mise-msb-base:v{N} --name <name> --mount-named <name>-mise-v1:/mise ...
     ↓
 msb exec <name> -- docker-up                           (Docker readiness)
     ↓
@@ -119,8 +119,13 @@ src/
     start.ts / stop.ts /     thin lifecycle delegations
     remove.ts / list.ts
     config.ts                print merged config
+    signing.ts               signing init command (keypair genesis)
     install.ts               symlink installer
     lifecycle.ts             internal helpers
+  signing/
+    paths.ts                 host/guest signing path constants (XDG-aware)
+    validate.ts              fail-closed signing key validation (ssh-keygen)
+    gitconfig.ts             generated guest gitconfig (identity + signing pins)
   config/
     types.ts                 strict types + BUILTIN_DEFAULTS
     loader.ts                TOML parsing + project discovery

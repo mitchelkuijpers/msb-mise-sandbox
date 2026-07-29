@@ -1,4 +1,5 @@
-export const STOCK_IMAGE_GENERATION = 1;
+// Generation 2: adds openssh-client (ssh-keygen) for sandbox commit signing.
+export const STOCK_IMAGE_GENERATION = 2;
 
 export const STOCK_IMAGE_TAG = `mise-msb-base:v${STOCK_IMAGE_GENERATION}`;
 

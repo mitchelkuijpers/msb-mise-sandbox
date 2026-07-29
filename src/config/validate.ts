@@ -97,6 +97,7 @@ export function validatePartial(
     "command",
     "labels",
     "identity",
+    "signing",
   ]);
   for (const key of Object.keys(config)) {
     if (!allowedTopLevel.has(key)) {
@@ -271,7 +272,7 @@ export function validatePartial(
 
   if (config.secrets !== undefined) {
     for (const [name, entry] of Object.entries(config.secrets)) {
-      validateSecretEntry(entry, `secrets.${name}`, sourceFile);
+      validateSecretEntry(entry, name, `secrets.${name}`, sourceFile);
     }
   }
 
@@ -296,6 +297,38 @@ export function validatePartial(
         "identity.workdir",
         sourceFile,
       );
+    }
+  }
+
+  if (config.signing !== undefined) {
+    const allowedSigning = new Set(["enabled", "key"]);
+    for (const key of Object.keys(config.signing)) {
+      if (!allowedSigning.has(key)) {
+        throw new ConfigValidationError(
+          `unknown signing key "${key}"`,
+          `signing.${key}`,
+          sourceFile,
+        );
+      }
+    }
+    if (
+      config.signing.enabled !== undefined &&
+      typeof config.signing.enabled !== "boolean"
+    ) {
+      throw new ConfigValidationError(
+        "signing.enabled must be a boolean",
+        "signing.enabled",
+        sourceFile,
+      );
+    }
+    if (config.signing.key !== undefined) {
+      if (typeof config.signing.key !== "string" || config.signing.key.length === 0) {
+        throw new ConfigValidationError(
+          "signing.key must be a non-empty string (host path to the signing key)",
+          "signing.key",
+          sourceFile,
+        );
+      }
     }
   }
 
@@ -459,10 +492,18 @@ function validateSecretEntry(
   entry: PartialConfig["secrets"] extends Record<string, infer V> | undefined
     ? V
     : never,
+  name: string,
   fieldPath: string,
   sourceFile?: string,
 ): void {
   if (entry === undefined) return;
+  if (!isValidEnvName(name)) {
+    throw new ConfigValidationError(
+      `secret key must be a valid environment variable name (it is the guest-facing variable; rename to the intended guest variable)`,
+      fieldPath,
+      sourceFile,
+    );
+  }
   if (entry.from !== undefined && !isValidEnvName(entry.from)) {
     throw new ConfigValidationError(
       `secret source must be a valid environment variable name`,
@@ -572,6 +613,12 @@ export function validateMerged(config: SandboxConfig): void {
     }
   }
   for (const [name, secret] of Object.entries(config.secrets)) {
+    if (!isValidEnvName(name)) {
+      throw new ConfigValidationError(
+        `secret key "${name}" is not a valid environment variable name (it is the guest-facing variable; rename to the intended guest variable)`,
+        `secrets.${name}`,
+      );
+    }
     if (!isValidEnvName(secret.from)) {
       throw new ConfigValidationError(
         `secret "${name}" source "${secret.from}" is not a valid env name`,

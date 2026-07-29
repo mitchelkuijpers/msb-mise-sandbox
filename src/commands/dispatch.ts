@@ -15,6 +15,7 @@ import { runRemoveCommand } from "./remove.js";
 import { runRunCommand } from "./run.js";
 import { runSetupCommand } from "./setup.js";
 import { runShellCommand } from "./shell.js";
+import { runSigningCommand } from "./signing.js";
 import { runStartCommand } from "./start.js";
 import { runStopCommand } from "./stop.js";
 
@@ -42,6 +43,7 @@ Commands:
   remove <name>                 Remove a sandbox
   list                          List sandboxes
   config                        Print the effective merged configuration
+  signing init [--force]        Generate the sandbox commit-signing keypair
   install [--force]             Symlink wrapper into ~/.local/bin
 `;
 
@@ -86,6 +88,9 @@ export async function dispatch(argv: string[]): Promise<void> {
       return;
     case "config":
       await runConfigCommand(global, rest.slice(1));
+      return;
+    case "signing":
+      await runSigningCommand(global, rest.slice(1));
       return;
     case "install":
       await runInstallCommand(global, rest.slice(1));

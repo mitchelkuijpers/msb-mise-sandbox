@@ -14,6 +14,7 @@
 | `remove <name>` | Remove a sandbox |
 | `list` | List sandboxes |
 | `config` | Print the effective merged configuration |
+| `signing init [--force]` | Generate the sandbox commit-signing keypair |
 | `install [--force]` | Symlink `~/.local/bin/mise-msb` |
 
 All lifecycle commands accept `--print` (alias `--dry-run`) to print the
@@ -92,7 +93,7 @@ customImage = "my-project:dev" # required when imageMode = "custom"
 dockerDataSize = "10G"         # Docker data volume size (M or G suffix)
 ```
 
-Stock mode uses the wrapper's versioned local stock image (`mise-msb-base:v1`),
+Stock mode uses the wrapper's versioned local stock image (`mise-msb-base:v2`),
 injects persistent named volumes for mise (`<sandbox>-mise-v1:/mise`) and
 Docker data (`<sandbox>-docker-data:/var/lib/docker`), and runs Docker
 readiness and mise bootstrap automatically.
@@ -178,12 +179,92 @@ hosts = ["gitlab.com"]          # allowed destination hosts
 The wrapper verifies `from` is present in the host environment without
 reading its value, then emits `--secret GITLAB_TOKEN@gitlab.com`.
 
+The table key (e.g. `GITLAB_TOKEN`) is the **guest-facing** environment
+variable name. It must be a valid environment variable identifier
+(`[A-Za-z_][A-Za-z0-9_]*`) — decorative keys such as
+`personal-github-token` are rejected. The `from` field is the
+**host-side** variable whose value microsandbox will substitute into
+allowed TLS destinations.
+
+#### Mapping a personal host source to a conventional guest tool variable
+
+```toml
+[secrets.OPENCODE_API_KEY]
+from = "OPENCODE_API_KEY_PERSONAL"
+hosts = ["opencode.ai"]
+```
+
+When the table key differs from `from`, the wrapper emits:
+
+```
+--env OPENCODE_API_KEY=$MSB_OPENCODE_API_KEY_PERSONAL
+--secret OPENCODE_API_KEY_PERSONAL@opencode.ai
+```
+
+The guest sees `OPENCODE_API_KEY=$MSB_OPENCODE_API_KEY_PERSONAL`. Tools
+that read `OPENCODE_API_KEY` send the literal `$MSB_OPENCODE_API_KEY_PERSONAL`
+to an allowed host and microsandbox substitutes the real
+`OPENCODE_API_KEY_PERSONAL` value at the TLS boundary only. The wrapper
+never reads, copies, or logs the real value.
+
+A configured secret entry that already uses the same name as its source
+(e.g. `secrets.GITLAB_TOKEN.from = "GITLAB_TOKEN"`) continues to emit
+only `--secret GITLAB_TOKEN@gitlab.com` — no bridge is needed because the
+source-named placeholder is already exposed to the guest by `--secret`.
+
+If a `[secrets.<name>]` key overlaps with an `[env]` entry, the secret
+mapping wins authoritatively: the bridge replaces the literal env value
+in argv so a real value never enters the wrapper's command line.
+
 ### `[labels]`
 
 ```toml
 [labels]
 team = "platform"
 ```
+
+### `[signing]`
+
+```toml
+[signing]
+enabled = true
+key = "~/.config/mise-msb/signing/id_ed25519_sandbox"
+```
+
+Enables SSH commit signing inside the sandbox with a dedicated,
+passphrase-less ed25519 key. Generate the keypair with
+`mise-msb signing init`, then register the printed public key as an SSH
+**signing** key with your forge (GitHub/GitLab) — the command prints exact
+instructions and the `allowed_signers` line for commit verification.
+
+- `enabled` (boolean, default `false`) — may be set in any layer; a project
+  can opt in while the operator's personal layer supplies the key.
+- `key` (host path, `~` is expanded) — must resolve (symlinks included) to
+  a path under `~/.config/mise-msb/signing/`. Paths anywhere else (e.g.
+  `~/.ssh/id_ed25519`) are rejected, so the feature can never be pointed at
+  an authentication key. Validation runs before any `msb` invocation, in
+  normal and `--print` modes, and fails closed: permissions must be ≤ 0600,
+  the key must be ed25519 and unencrypted, and the sibling `.pub` must match.
+
+When enabled, `create` argv gains four deterministic additions:
+
+- `--mount-file <key>:/etc/mise-msb/signing/id_ed25519_sandbox:ro`
+- `--mount-file <key>.pub:/etc/mise-msb/signing/id_ed25519_sandbox.pub:ro`
+- `--copy <tmp>:/etc/mise-msb/gitconfig` — a wrapper-generated gitconfig
+- `--env GIT_CONFIG_GLOBAL=/etc/mise-msb/gitconfig`
+
+The generated gitconfig owns the guest's global git slot. It pins
+`gpg.format = ssh`, `user.signingkey` (the guest pubkey path), and
+`commit.gpgsign = true`, plus the committer identity (`user.name` /
+`user.email`) resolved from the host's git configuration. When a host
+`~/.gitconfig` mount is configured, the generated file begins with an
+`[include]` of it — the mount is retargeted to the neutral path
+`/etc/mise-msb/host-gitconfig` (read-only) — so host settings flow through
+while the pinned entries override any inherited signing configuration.
+Guest key placement is deliberately outside `~/.ssh`: the key can sign
+commits but no guest tool can pick it up for authentication. Key material
+travels by read-only mount only — never via `--copy`, `--env`, or argv —
+so it cannot enter the guest writable layer or any sandbox snapshot.
 
 ## Personal Bootstrap
 

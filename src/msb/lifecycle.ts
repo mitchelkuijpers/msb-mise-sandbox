@@ -8,6 +8,7 @@
  */
 
 import type { SandboxConfig } from "../config/types.js";
+import { type ValidatedSigningKey } from "../signing/validate.js";
 import {
   buildCreateArgv,
   buildExecArgv,
@@ -19,6 +20,7 @@ import {
   mountArgv,
 } from "./argv.js";
 import { run, type SpawnResult } from "./subprocess.js";
+import type { GitIdentity } from "../signing/gitconfig.js";
 import {
   DOCKER_UP_HELPER,
   BOOTSTRAP_HELPER,
@@ -151,6 +153,10 @@ export interface RunSequenceInput {
   replace?: boolean;
   /** Optional home dir override (used in tests). */
   homeDir?: string;
+  /** Validated signing key pair for canonical mount paths. */
+  signingKey?: ValidatedSigningKey;
+  /** Committer identity for the generated guest gitconfig (signing mode). */
+  gitIdentity?: GitIdentity;
 }
 
 export function planRunSequence(input: RunSequenceInput): RunSequence {
@@ -171,6 +177,8 @@ export function planRunSequence(input: RunSequenceInput): RunSequence {
         name,
         config: input.config,
         replace: input.replace,
+        signingKey: input.signingKey,
+        gitIdentity: input.gitIdentity,
       }),
     );
   } else if (state === "stopped") {

@@ -125,4 +125,35 @@ describe("mergeConfigs", () => {
     expect(merged.stock.imageMode).toBe("stock");
     expect(merged.stock.customImage).toBeUndefined();
   });
+
+  test("signing defaults to disabled", () => {
+    const merged = mergeConfigs([]);
+    expect(merged.signing).toEqual({ enabled: false });
+  });
+
+  test("signing: personal key + project enable merge by scalar replacement", () => {
+    const merged = mergeConfigs([
+      { signing: { key: "/home/op/.config/mise-msb/signing/id_ed25519_sandbox" } },
+      { signing: { enabled: true } },
+    ]);
+    expect(merged.signing.enabled).toBe(true);
+    expect(merged.signing.key).toBe("/home/op/.config/mise-msb/signing/id_ed25519_sandbox");
+  });
+
+  test("signing: higher-precedence layer overrides the key path", () => {
+    const merged = mergeConfigs([
+      { signing: { enabled: true, key: "/personal/key" } },
+      { signing: { key: "/project/key" } },
+    ]);
+    expect(merged.signing.enabled).toBe(true);
+    expect(merged.signing.key).toBe("/project/key");
+  });
+
+  test("signing: key path expands a leading ~", () => {
+    const merged = mergeConfigs([
+      { signing: { key: "~/.config/mise-msb/signing/id_ed25519_sandbox" } },
+    ]);
+    expect(merged.signing.key).not.toContain("~");
+    expect(merged.signing.key?.endsWith("/.config/mise-msb/signing/id_ed25519_sandbox")).toBe(true);
+  });
 });

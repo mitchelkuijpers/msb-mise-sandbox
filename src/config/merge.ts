@@ -25,6 +25,15 @@ import {
   type SandboxConfig,
 } from "./types.js";
 import { mergeRecord } from "./records.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+/** Expand a leading `~` (or `~/`) to the user's home directory. */
+export function expandHome(path: string, homeDir: string = homedir()): string {
+  if (path === "~") return homeDir;
+  if (path.startsWith("~/")) return join(homeDir, path.slice(2));
+  return path;
+}
 
 /** Merge an ordered list of partial configs on top of the built-in defaults. */
 export function mergeConfigs(layers: PartialConfig[]): SandboxConfig {
@@ -51,6 +60,7 @@ function cloneDefaults(): SandboxConfig {
     env: {},
     secrets: {},
     labels: {},
+    signing: { ...BUILTIN_DEFAULTS.signing },
   };
 }
 
@@ -70,6 +80,7 @@ function mergeLayer(base: SandboxConfig, overlay: PartialConfig): SandboxConfig 
     env: { ...base.env },
     secrets: { ...base.secrets },
     labels: { ...base.labels },
+    signing: { ...base.signing },
   };
 
   if (overlay.identity !== undefined) {
@@ -174,6 +185,15 @@ function mergeLayer(base: SandboxConfig, overlay: PartialConfig): SandboxConfig 
 
   if (overlay.command !== undefined && overlay.command.argv !== undefined) {
     next.command = { argv: [...overlay.command.argv] };
+  }
+
+  if (overlay.signing !== undefined) {
+    if (overlay.signing.enabled !== undefined) {
+      next.signing.enabled = overlay.signing.enabled;
+    }
+    if (overlay.signing.key !== undefined && overlay.signing.key.length > 0) {
+      next.signing.key = expandHome(overlay.signing.key);
+    }
   }
 
   return next;

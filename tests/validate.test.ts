@@ -49,6 +49,85 @@ describe("validatePartial", () => {
   test("rejects invalid env variable name", () => {
     expect(() => validatePartial({ env: { "1bad": "x" } })).toThrow(/env\.1bad/);
   });
+
+  test("accepts a secret entry whose key matches its `from`", () => {
+    expect(() =>
+      validatePartial({
+        secrets: {
+          OPENAI_API_KEY: { from: "OPENAI_API_KEY", hosts: ["api.openai.com"] },
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("accepts a secret entry whose key differs from its `from`", () => {
+    expect(() =>
+      validatePartial({
+        secrets: {
+          OPENCODE_API_KEY: {
+            from: "OPENCODE_API_KEY_PERSONAL",
+            hosts: ["opencode.ai"],
+          },
+        },
+      }),
+    ).not.toThrow();
+  });
+
+  test("rejects decorative secret keys that are not env names", () => {
+    expect(() =>
+      validatePartial({
+        secrets: {
+          "personal-github-token": {
+            from: "GITHUB_TOKEN",
+            hosts: ["github.com"],
+          },
+        },
+      }),
+    ).toThrow(/secrets\.personal-github-token/);
+  });
+
+  test("rejects secret keys starting with a digit", () => {
+    expect(() =>
+      validatePartial({
+        secrets: { "1BAD": { from: "FOO", hosts: ["x"] } },
+      }),
+    ).toThrow(/secrets\.1BAD/);
+  });
+
+  test("still rejects an invalid `from` source independently of the key", () => {
+    expect(() =>
+      validatePartial({
+        secrets: {
+          OPENCODE_API_KEY: {
+            from: "opencode-api-key-personal",
+            hosts: ["opencode.ai"],
+          },
+        },
+      }),
+    ).toThrow(/secrets\.OPENCODE_API_KEY\.from/);
+  });
+
+  test("rejects unknown keys under [signing]", () => {
+    expect(() =>
+      validatePartial({ signing: { bits: 256 } as unknown as { enabled?: boolean; key?: string } }, "cfg.toml"),
+    ).toThrow(/cfg\.toml.*signing\.bits|unknown signing key/);
+  });
+
+  test("rejects non-boolean signing.enabled", () => {
+    expect(() =>
+      validatePartial({ signing: { enabled: "yes" } as unknown as { enabled?: boolean } }),
+    ).toThrow(/signing\.enabled/);
+  });
+
+  test("rejects empty signing.key", () => {
+    expect(() => validatePartial({ signing: { key: "" } })).toThrow(/signing\.key/);
+  });
+
+  test("accepts a well-formed [signing] table", () => {
+    expect(() =>
+      validatePartial({ signing: { enabled: true, key: "~/.config/mise-msb/signing/id_ed25519_sandbox" } }),
+    ).not.toThrow();
+  });
 });
 
 describe("validateLayers", () => {
@@ -62,6 +141,25 @@ describe("validateLayers", () => {
 });
 
 describe("validateMerged", () => {
+  test("rejects an invalid secret table key", () => {
+    const merged: SandboxConfig = {
+      identity: { name: "p", workdir: "/workspace" },
+      stock: { imageMode: "stock", dockerDataSize: "10G" },
+      runtime: { cpus: 4, memory: "8G" },
+      workdirTarget: "/workspace",
+      mounts: {},
+      ports: {},
+      network: { defaultEgress: "allow", allow: [], inherit: true },
+      env: {},
+      secrets: {
+        "bad-name": { from: "BAD_NAME", hosts: ["x.example"] },
+      },
+      labels: {},
+      signing: { enabled: false },
+    };
+    expect(() => validateMerged(merged)).toThrow(/secrets\.bad-name/);
+  });
+
   test("rejects invalid docker data size", () => {
     const merged: SandboxConfig = {
       identity: { name: "p", workdir: "/workspace" },
@@ -74,6 +172,7 @@ describe("validateMerged", () => {
       env: {},
       secrets: {},
       labels: {},
+      signing: { enabled: false },
     };
     expect(() => validateMerged(merged)).toThrow(/stock\.dockerDataSize/);
   });
@@ -133,6 +232,18 @@ describe("loadConfig end-to-end", () => {
     const dir = makeTmp("e2e-empty");
     const { config } = await loadConfig({ cwd: dir, homeDir: "/nonexistent" });
     expect(config.runtime.cpus).toBe(4);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("disabled signing with a nonexistent key loads without key-file checks", async () => {
+    const dir = makeTmp("e2e-signing-off");
+    writeFileSync(
+      join(dir, ".sandbox.toml"),
+      '[signing]\nkey = "/nonexistent/id_ed25519_sandbox"\n',
+    );
+    const { config } = await loadConfig({ cwd: dir, homeDir: "/nonexistent" });
+    expect(config.signing.enabled).toBe(false);
+    expect(config.signing.key).toBe("/nonexistent/id_ed25519_sandbox");
     rmSync(dir, { recursive: true, force: true });
   });
 });

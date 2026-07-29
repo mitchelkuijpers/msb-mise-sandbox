@@ -6,8 +6,9 @@ import { formatArgv, formatArgvGroups } from "../msb/print.js";
 import { LifecycleArgv, planStockBootstrapStages, stockImageIsLoaded } from "../msb/lifecycle.js";
 import { STOCK_IMAGE_TAG } from "../stock-image/constants.js";
 import type { GlobalOptions } from "./dispatch.js";
-import { applyNameOverride, resolveInvocation } from "./_shared.js";
+import { applyNameOverride, gateSigningValidation, resolveInvocation } from "./_shared.js";
 import { resolveImage } from "../config/naming.js";
+import { hostGitIdentity } from "../signing/gitconfig.js";
 
 export async function runCreateCommand(
   global: GlobalOptions,
@@ -19,6 +20,9 @@ export async function runCreateCommand(
     throw new Error("create requires a sandbox name");
   }
   applyNameOverride(config, name, projectRoot);
+
+  // Signing preflight: fail closed before any msb invocation (print too).
+  const validatedKey = gateSigningValidation(config);
 
   // Stock mode preflight: ensure the stock image is loaded.
   if (config.stock.imageMode === "stock" && !print) {
@@ -35,6 +39,8 @@ export async function runCreateCommand(
     image: resolveImage(config),
     name,
     config,
+    signingKey: validatedKey,
+    gitIdentity: config.signing.enabled ? hostGitIdentity() : undefined,
   });
 
   if (print) {

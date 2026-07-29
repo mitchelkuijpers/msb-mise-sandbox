@@ -112,6 +112,17 @@ export interface CommandSpec {
 }
 
 // ---------------------------------------------------------------------------
+// Commit signing
+// ---------------------------------------------------------------------------
+
+export interface SigningConfig {
+  /** Enable sandbox commit signing with a dedicated SSH key. */
+  enabled: boolean;
+  /** Host path to the passphrase-less ed25519 private key (must resolve under ~/.config/mise-msb/signing/). */
+  key?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Project identity
 // ---------------------------------------------------------------------------
 
@@ -145,6 +156,8 @@ export interface SandboxConfig {
   command?: CommandSpec;
   /** Sandbox labels (sorted in argv). */
   labels: Record<string, string>;
+  /** Commit signing configuration. */
+  signing: SigningConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +210,11 @@ export interface PartialIdentity {
   workdir?: string;
 }
 
+export interface PartialSigning {
+  enabled?: boolean;
+  key?: string;
+}
+
 /**
  * Shape of a single TOML config layer (after parsing, before merge).
  * Every field is optional because the layers may omit sections entirely.
@@ -213,6 +231,7 @@ export interface PartialConfig {
   command?: PartialCommand;
   labels?: Record<string, string>;
   identity?: PartialIdentity;
+  signing?: PartialSigning;
 }
 
 // ---------------------------------------------------------------------------
@@ -237,4 +256,5 @@ export const BUILTIN_DEFAULTS: SandboxConfig = {
   env: {},
   secrets: {},
   labels: {},
+  signing: { enabled: false },
 };

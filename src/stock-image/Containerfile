@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     libatomic1 \
     lsb-release \
+    openssh-client \
     sudo \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*

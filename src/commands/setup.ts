@@ -1,4 +1,5 @@
 import { runSetup, type SetupInputs, type SetupOutput } from "../setup/setup.js";
+import { STOCK_IMAGE_TAG } from "../stock-image/constants.js";
 import type { GlobalOptions } from "./dispatch.js";
 import { resolveInvocation } from "./_shared.js";
 
@@ -31,6 +32,6 @@ export async function runSetupCommand(
   if (result.skipped && !print) {
     console.log(`mise-msb setup: stock image is already loaded (use --force to rebuild)`);
   } else if (!print) {
-    console.log(`mise-msb setup: loaded mise-msb-base:v1`);
+    console.log(`mise-msb setup: loaded ${STOCK_IMAGE_TAG}`);
   }
 }

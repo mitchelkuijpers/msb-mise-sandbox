@@ -6,3 +6,6 @@ node_modules/
 
 # mise-msb transient build outputs
 .mise-msb-build/
+
+# mise-msb transient setup outputs
+.mise-msb-setup/

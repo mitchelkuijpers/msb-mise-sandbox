@@ -29,39 +29,27 @@ The CLI SHALL construct subprocess argv arrays without shell interpolation and S
 
 ### Requirement: Generic lifecycle commands
 
-The CLI SHALL provide `setup`, `create`, `run`, `shell`, `exec`, `start`, `stop`, `remove`, `list`, `config`, and `signing init` commands. It SHALL NOT provide a wrapper-managed project image build command. `create` SHALL execute the generated `msb create` and, in stock mode, complete Docker, personal, and project bootstrap before reporting success; `run` SHALL create or start the configured sandbox as needed, ensure stock bootstrap as applicable, and then attach the configured or supplied command; `shell` SHALL attach an interactive TTY through `msb exec` after applicable bootstrap; `exec` SHALL preserve every argument after `--` and ensure current project tools in stock mode; direct lifecycle commands SHALL delegate to canonical `msb` operations plus documented stock-runtime stages. The wrapper SHALL propagate subprocess exit codes and SHALL not add tool-specific launch commands. `signing init` SHALL perform signing key generation as specified in the sandbox-commit-signing capability and SHALL NOT create, start, or modify any sandbox.
+The CLI SHALL provide only the setup and provisioning commands `setup`, `create`, `config`, `signing init`, and `install`. It SHALL NOT provide `run`, `shell`, `exec`, `start`, `stop`, `remove`, `rm`, `list`, or `ls`. It SHALL NOT provide a wrapper-managed project image build command. `create` SHALL execute the generated `msb create` and, in stock mode, complete Docker, personal, and project bootstrap before reporting success. Users SHALL invoke `msb` directly for sandbox runtime control, connection, command execution, teardown, and listing.
 
-#### Scenario: Exec preserves command arguments
-- **WHEN** the user runs `mise-msb exec -- bun test --timeout 5000`
-- **THEN** the wrapper executes the applicable stock bootstrap stages followed by `msb exec <configured-name> -- bun test --timeout 5000` without reparsing the command arguments
+#### Scenario: Provision a configured sandbox
+- **WHEN** the user runs `mise-msb create <name>` with a valid configuration
+- **THEN** the wrapper executes the generated `msb create` argv and completes applicable stock bootstrap stages before returning success
 
-#### Scenario: Existing stopped sandbox is started by run
-- **WHEN** `mise-msb run -- bun test` targets an existing stopped stock sandbox
-- **THEN** the wrapper starts it, ensures Docker and mise bootstrap, and executes `bun test`
-
-#### Scenario: List delegates without shadow state
-- **WHEN** the user runs `mise-msb list`
-- **THEN** the wrapper delegates to `msb list` and reads no wrapper-owned lifecycle registry
-
-#### Scenario: Bootstrap failure stops lifecycle sequence
-- **WHEN** a stock Docker, personal, or project bootstrap stage fails
-- **THEN** the wrapper returns that stage's exit status and does not execute later stages or the user command
-
-#### Scenario: Signing validation failure prevents sandbox creation
-- **WHEN** `[signing]` is enabled and any signing key validation check fails
-- **THEN** `create` (and any command that would create the sandbox) exits non-zero with the validation error and executes no `msb` command
+#### Scenario: Removed runtime command is rejected
+- **WHEN** the user invokes `mise-msb run`, `shell`, `exec`, `start`, `stop`, `remove`, `rm`, `list`, or `ls`
+- **THEN** the wrapper rejects the command as unknown and performs no `msb` operation
 
 ### Requirement: Printed commands are transparent and secret-safe
 
-Lifecycle and setup commands SHALL support `--print` and the alias `--dry-run`. Print mode SHALL show shell-escaped, copyable commands in execution order and SHALL execute no external command. Stock plans SHALL include derived mounts and Docker, personal, and project bootstrap stages. Printed secret arguments SHALL contain source environment variable names, literal microsandbox placeholders, guest mappings, and allowed hosts only because the wrapper never resolves secret values. Print mode SHALL exit successfully when command generation succeeds.
+The `setup` and `create` commands SHALL support `--print` and the alias `--dry-run`. Print mode SHALL show shell-escaped, copyable commands in execution order and SHALL execute no external command. Stock plans SHALL include derived mounts and Docker, personal, and project bootstrap stages. Printed secret arguments SHALL contain source environment variable names, literal microsandbox placeholders, guest mappings, and allowed hosts only because the wrapper never resolves secret values. Print mode SHALL exit successfully when command generation succeeds.
 
 #### Scenario: Print mode reveals generated policy but no value
 - **WHEN** a secret references `SERVICE_TOKEN` for `api.example.com`
 - **THEN** output contains `--secret SERVICE_TOKEN@api.example.com`, contains no value of that variable, and no subprocess runs
 
-#### Scenario: Multi-step run prints execution order
-- **WHEN** stock `run --print` would start, bootstrap, and execute in a sandbox
-- **THEN** output shows `msb start`, Docker readiness, personal bootstrap when configured, project bootstrap, and final `msb exec` in execution order
+#### Scenario: Create print mode shows provisioning order
+- **WHEN** stock `create --print` provisions a sandbox
+- **THEN** output shows the generated `msb create` argv followed by Docker readiness, personal bootstrap when configured, and project bootstrap in execution order
 
 #### Scenario: Personal mount contents remain private
 - **WHEN** print mode includes a personal host configuration mount

@@ -8,16 +8,9 @@
 
 import { runConfigCommand } from "./config.js";
 import { runCreateCommand } from "./create.js";
-import { runExecCommand } from "./exec.js";
 import { runInstallCommand } from "./install.js";
-import { runListCommand } from "./list.js";
-import { runRemoveCommand } from "./remove.js";
-import { runRunCommand } from "./run.js";
 import { runSetupCommand } from "./setup.js";
-import { runShellCommand } from "./shell.js";
 import { runSigningCommand } from "./signing.js";
-import { runStartCommand } from "./start.js";
-import { runStopCommand } from "./stop.js";
 
 export interface GlobalOptions {
   print: boolean;
@@ -35,13 +28,6 @@ Options:
 Commands:
   setup [--print] [--force]     Build and load the local stock runtime image
   create <name> [--print]       Create a sandbox
-  run <name> [-- cmd...]        Create (or start) + exec command
-  shell <name> [--print]        Attach interactive shell
-  exec <name> -- cmd...         Execute a single command
-  start <name>                  Start a stopped sandbox
-  stop <name>                   Stop a running sandbox
-  remove <name>                 Remove a sandbox
-  list                          List sandboxes
   config                        Print the effective merged configuration
   signing init [--force]        Generate the sandbox commit-signing keypair
   install [--force]             Symlink wrapper into ~/.local/bin
@@ -62,29 +48,6 @@ export async function dispatch(argv: string[]): Promise<void> {
       return;
     case "create":
       await runCreateCommand(global, rest.slice(1));
-      return;
-    case "run":
-      await runRunCommand(global, rest.slice(1));
-      return;
-    case "shell":
-      await runShellCommand(global, rest.slice(1));
-      return;
-    case "exec":
-      await runExecCommand(global, rest.slice(1));
-      return;
-    case "start":
-      await runStartCommand(global, rest.slice(1));
-      return;
-    case "stop":
-      await runStopCommand(global, rest.slice(1));
-      return;
-    case "remove":
-    case "rm":
-      await runRemoveCommand(global, rest.slice(1));
-      return;
-    case "list":
-    case "ls":
-      await runListCommand(global, rest.slice(1));
       return;
     case "config":
       await runConfigCommand(global, rest.slice(1));

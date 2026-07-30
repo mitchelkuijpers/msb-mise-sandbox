@@ -47,3 +47,14 @@ The merged runtime configuration SHALL default to stock image mode. Stock mode S
 #### Scenario: Missing stock image gives setup guidance
 - **WHEN** stock mode is selected but the expected local stock image is absent
 - **THEN** lifecycle creation fails before creating a sandbox and instructs the user to run `mise-msb setup`
+
+### Requirement: User-local binaries are available in stock sandboxes
+The stock image SHALL include `/root/.local/bin` on `PATH` for bootstrap stages and user commands. Mise-managed shims and binary directories SHALL precede `/root/.local/bin`, and system binary directories SHALL follow it.
+
+#### Scenario: Personal bootstrap installs a user-local executable
+- **WHEN** personal bootstrap installs an executable under `/root/.local/bin`
+- **THEN** a later stock sandbox command resolves and executes it by name without an absolute path
+
+#### Scenario: Mise-managed tools retain precedence
+- **WHEN** an executable name exists in both a mise-managed path and `/root/.local/bin`
+- **THEN** command lookup resolves the mise-managed executable first

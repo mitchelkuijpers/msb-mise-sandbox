@@ -190,6 +190,21 @@ describe("planStockBootstrapStages", () => {
     expect(projectStage).toBeDefined();
   });
 
+  test("project bootstrap stage passes the resolved workdir as its argument", () => {
+    const seq = planRunSequence({
+      config: baseConfig({ workdirTarget: "/host/proj" }),
+      image: "p:dev",
+      name: "p",
+      commandArgv: ["bash"],
+    });
+    const projectStage = seq.groups.find(
+      (g) => g.includes("mise-msb-bootstrap") && g.includes("project"),
+    );
+    expect(projectStage).toBeDefined();
+    const projectIdx = projectStage?.indexOf("project") ?? -1;
+    expect(projectStage?.[projectIdx + 1]).toBe("/host/proj");
+  });
+
   test("custom mode does not add bootstrap stages", () => {
     const config = baseConfig({
       stock: { imageMode: "custom", customImage: "my:v1", dockerDataSize: "10G" },

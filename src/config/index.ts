@@ -32,6 +32,12 @@ export async function loadConfig(options: LoadOptions = {}): Promise<ResolvedCon
   // diagnostics instead of post-merge confusion.
   validateLayers(layers);
 
+  // Identity defaults: project name from the discovered project root
+  // (or the cwd when no .sandbox.toml was found). Computed before the
+  // merge so the same-path `project` mount can be derived from it.
+  const projectPath = findProjectConfig(options.cwd ?? process.cwd());
+  const projectRoot = projectPath !== null ? dirname(projectPath) : options.cwd ?? process.cwd();
+
   const partials: PartialConfig[] = [];
   for (const layer of layers) {
     if (layer.config !== undefined) {
@@ -40,12 +46,8 @@ export async function loadConfig(options: LoadOptions = {}): Promise<ResolvedCon
   }
 
   // Apply built-in defaults before merging.
-  const merged = mergeConfigs(partials);
+  const merged = mergeConfigs(partials, projectRoot);
 
-  // Identity defaults: project name from the discovered project root
-  // (or the cwd when no .sandbox.toml was found).
-  const projectPath = findProjectConfig(options.cwd ?? process.cwd());
-  const projectRoot = projectPath !== null ? dirname(projectPath) : options.cwd ?? process.cwd();
   const derivedName = deriveProjectName(projectRoot);
   if (merged.identity.name.length === 0) {
     merged.identity.name = derivedName;

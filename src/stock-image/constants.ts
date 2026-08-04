@@ -1,5 +1,7 @@
 // Generation 3: fixes personal bootstrap and exposes /root/.local/bin on PATH.
-export const STOCK_IMAGE_GENERATION = 3;
+// Generation 4: drops the baked-in WORKDIR; the project bootstrap takes the
+// resolved workdir as an argument and mounts the project at its host path.
+export const STOCK_IMAGE_GENERATION = 4;
 
 export const STOCK_IMAGE_TAG = `mise-msb-base:v${STOCK_IMAGE_GENERATION}`;
 

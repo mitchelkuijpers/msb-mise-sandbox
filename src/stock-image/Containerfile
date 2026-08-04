@@ -44,5 +44,3 @@ ENV MISE_CONFIG_DIR=/mise/config
 ENV MISE_STATE_DIR=/mise/state
 ENV MISE_SHIMS_DIR=/mise/shims
 ENV PATH=/mise/shims:/mise/data/bin:/root/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
-
-WORKDIR /workspace

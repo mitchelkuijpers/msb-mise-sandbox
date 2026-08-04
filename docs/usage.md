@@ -27,34 +27,66 @@ generated `msb` argv without executing it. Multi-step commands like
 # Build and load the local stock Ubuntu image (one-time setup)
 mise-msb setup
 
-# Create a stock-mode sandbox (Docker + personal bootstrap automatically)
+# Create a stock-mode sandbox (Docker + personal bootstrap automatically).
+# The project is mounted at its host path and the shell starts there.
 mise-msb create my-project
+
+# Check the effective config — note the built-in same-path project mount
+mise-msb config
 
 # Run commands
 mise-msb exec my-project -- bun test
 mise-msb shell my-project
 ```
 
-## Mounting Your Project
+`mise-msb config` shows the resolved project mount, e.g.:
 
-Sandboxes never mount host paths implicitly, so a fresh sandbox starts with
-an **empty `/workspace`**. Almost every project wants its directory
-live-mounted there — stock sandboxes default `--workdir` to `/workspace` and
-the personal bootstrap runs `mise bootstrap` in it, while project tools still
-go through a separate `mise install` stage. Add this to your project's
-`.sandbox.toml`:
-
-```toml
-[mounts.workspace]
-kind = "dir"
-source = "."
-target = "/workspace"
+```json
+{
+  "projectRoot": "/Users/alice/Development/foo",
+  "workdirTarget": "/Users/alice/Development/foo",
+  "mounts": {
+    "project": {
+      "kind": "dir",
+      "source": "/Users/alice/Development/foo",
+      "target": "/Users/alice/Development/foo",
+      "options": "rw"
+    }
+  }
+}
 ```
 
-`source = "."` resolves to the project root (the directory containing
-`.sandbox.toml`). Edits on either side are visible immediately; nothing is
-copied. Mounts are fixed at creation time, so recreate the sandbox after
-adding one (`mise-msb remove <name> && mise-msb create <name>`).
+## Mounting Your Project
+
+By default the wrapper mounts the project directory into the guest **at the
+same absolute path as on the host**: `/Users/alice/Development/foo` is
+mounted at `/Users/alice/Development/foo` inside the sandbox. This comes
+from the built-in `[mounts.project]` default (`source = "."`, `target` = the
+resolved source, `options = "rw"`), and `--workdir` (the default shell cwd)
+points there. Edits on either side are visible immediately; nothing is
+copied.
+
+This has a deliberate consequence: guest tools that keep per-project state —
+memories, caches, history, or other shared configs keyed by the absolute
+project path — see the same project identity as on the host. Every project is
+distinguishable by its real path, and state written in the sandbox persists
+on the host and vice versa, instead of landing on the ephemeral guest disk.
+
+Two escape hatches:
+
+- Override the guest location from `.sandbox.toml` — the workdir follows
+  the effective target:
+
+  ```toml
+  [mounts.project]
+  target = "/some/other/path"
+  ```
+
+- Set `workdir = "..."` to open the shell elsewhere; it wins over the
+  mount-derived workdir.
+
+Mounts are fixed at creation time, so recreate the sandbox after changing
+one (`mise-msb remove <name> && mise-msb create <name>`).
 
 ## Configuration Layers
 
@@ -94,7 +126,7 @@ customImage = "my-project:dev" # required when imageMode = "custom"
 dockerDataSize = "10G"         # Docker data volume size (M or G suffix)
 ```
 
-Stock mode uses the wrapper's versioned local stock image (`mise-msb-base:v3`),
+Stock mode uses the wrapper's versioned local stock image (`mise-msb-base:v4`),
 injects persistent named volumes for mise (`<sandbox>-mise-v1:/mise`) and
 Docker data (`<sandbox>-docker-data:/var/lib/docker`), and runs Docker
 readiness and mise bootstrap automatically.
@@ -137,13 +169,13 @@ Keys must be valid environment variable identifiers (`[A-Za-z_][A-Za-z0-9_]*`).
 ### `[mounts.<name>]`
 
 ```toml
-[mounts.workspace]
+[mounts.cache]
 kind = "dir"        # dir | file | disk | named
-source = "."        # host path (or named volume name)
-target = "/workspace"  # absolute guest path
+source = "/host/path"  # host path (or named volume name)
+target = "/guest/path" # absolute guest path
 options = "ro"      # optional, forwarded verbatim
 
-[mounts.cache]
+[mounts.cache-named]
 kind = "named"
 source = "cache-vol"
 target = "/root/.cache"
@@ -154,6 +186,15 @@ source = "data-vol"
 target = "/data"
 size = "10G"        # disk-backed named volume capacity
 ```
+
+`source = "."` resolves to the project root (the directory containing
+`.sandbox.toml`) at merge time — merged configs and `mise-msb config` always
+show the absolute path. Other relative sources are passed through verbatim.
+
+The mount name `project` is reserved for the built-in same-path project
+mount. When its `target` is omitted it defaults to the resolved source
+(see “Mounting Your Project”); an explicit `target` overrides that and the
+workdir follows the effective target.
 
 In stock mode, `/mise` and `/var/lib/docker` are reserved for wrapper-managed
 persistent state. Declaring an explicit mount with either target in stock mode
@@ -304,9 +345,10 @@ unchanged warm-start invocations skip it.
 saves the resulting archive, and loads it with `msb image load`. Warm setup
 skips when the expected generation is already loaded. `setup --force` rebuilds.
 
-### Migrating to stock image v3
+### Migrating to stock image v4
 
-To pick up the fixed personal bootstrap helper and PATH:
+To pick up the same-path project mount (the image no longer bakes in a
+`WORKDIR` and the project bootstrap receives the resolved workdir):
 
 1. Run `mise-msb setup`.
 2. Stop, remove, and recreate existing stock sandboxes.
@@ -323,7 +365,8 @@ After `create` or `start`, stock mode runs these stages in order:
    personal configuration exists (skips on unchanged warm-start) and performs
    the full personal `mise bootstrap`, including tools
 3. **Project bootstrap** — `mise install --locked` when `mise.lock` exists,
-   otherwise `mise install`
+   otherwise `mise install`, run in the resolved workdir (the same-path
+   project mount by default)
 
 Any stage failure stops the sequence and propagates the exit code.
 
@@ -353,15 +396,17 @@ printed sequence.
 
 ```bash
 $ mise-msb run my-project -- bun test --print
-msb create mise-msb-base:v1 --name my-project --cpus 4 --memory 8G \
-    --workdir /workspace --mount-named my-project-mise-v1:/mise \
+msb create mise-msb-base:v4 --name my-project --cpus 4 --memory 8G \
+    --workdir /Users/alice/Development/foo \
+    --mount-dir /Users/alice/Development/foo:/Users/alice/Development/foo:rw \
+    --mount-named my-project-mise-v1:/mise \
     --mount-named my-project-docker-data:/var/lib/docker:kind=disk,size=10G
 
 msb exec my-project -- docker-up
 
 msb exec my-project -- mise-msb-bootstrap personal <hash>
 
-msb exec my-project -- mise-msb-bootstrap project
+msb exec my-project -- mise-msb-bootstrap project /Users/alice/Development/foo
 
 msb exec my-project -- bun test
 ```

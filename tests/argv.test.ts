@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { buildCreateArgv, mountArgv, portToString, secretArgv } from "../src/msb/argv.js";
 import { formatArgv, quoteArg } from "../src/msb/print.js";
 import { BUILTIN_DEFAULTS, type SandboxConfig } from "../src/config/types.js";
+import { mergeConfigs } from "../src/config/merge.js";
 import { generateGuestGitconfig, guestGitconfigTempPath } from "../src/signing/gitconfig.js";
 import { readFileSync } from "node:fs";
 
@@ -246,6 +247,17 @@ describe("buildCreateArgv", () => {
     expect(aIndex).toBeLessThan(zIndex);
     expect(argv).toContain("--mount-named");
     expect(argv).toContain("--mount-dir");
+  });
+
+  test("default merged config mounts the project at its host path", () => {
+    const cfg = mergeConfigs([], "/host/proj");
+    cfg.identity.name = "p";
+    const argv = buildCreateArgv({ image: "p:dev", name: "p", config: cfg });
+    expect(argv).toContain("--mount-dir");
+    expect(argv).toContain("/host/proj:/host/proj:rw");
+    expect(argv[argv.indexOf("--workdir") + 1]).toBe("/host/proj");
+    // No /workspace anywhere unless a user mount defines it.
+    expect(argv.join(" ")).not.toContain("/workspace");
   });
 
   test("emits sorted ports with explicit loopback bind", () => {

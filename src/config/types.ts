@@ -246,7 +246,11 @@ export const BUILTIN_DEFAULTS: SandboxConfig = {
   },
   runtime: { cpus: 4, memory: "8G" },
   workdirTarget: "/workspace",
-  mounts: {},
+  mounts: {
+    // Built-in same-path project mount: source "." and an empty target
+    // are resolved to the project root at merge time (see merge.ts).
+    project: { kind: "dir", source: ".", target: "", options: "rw" },
+  },
   ports: {},
   network: {
     defaultEgress: "allow",

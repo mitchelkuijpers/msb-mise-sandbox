@@ -124,8 +124,9 @@ export function planStockBootstrapStages(input: StockBootstrapInput): string[][]
     ]));
   }
 
-  // Stage: project bootstrap.
-  groups.push(buildExecArgv(name, [BOOTSTRAP_HELPER, "project"]));
+  // Stage: project bootstrap, run in the resolved workdir (the
+  // same-path project mount target by default).
+  groups.push(buildExecArgv(name, [BOOTSTRAP_HELPER, "project", config.workdirTarget]));
 
   return groups;
 }

@@ -12,8 +12,9 @@ describe("Containerfile", () => {
     expect(content).toContain("docker-up");
     expect(content).toContain("mise-msb-bootstrap");
     expect(content).toContain("STOCK_GENERATION");
-    // Bootstrap cd's into /workspace and stock sandboxes default --workdir there.
-    expect(content).toContain("WORKDIR /workspace");
+    // The image owns no workdir: the wrapper always passes --workdir,
+    // so the guest cwd follows the same-path project mount.
+    expect(content).not.toContain("WORKDIR");
     expect(pathLine).toContain("/mise/shims:/mise/data/bin:/root/.local/bin:");
     expect(pathLine.indexOf("/mise/shims")).toBeLessThan(pathLine.indexOf("/mise/data/bin"));
     expect(pathLine.indexOf("/mise/data/bin")).toBeLessThan(pathLine.indexOf("/root/.local/bin"));
@@ -54,6 +55,9 @@ describe("mise-msb-bootstrap", () => {
       "utf8",
     );
     expect(script).toContain("project");
+    // Workdir arrives as the second argument (after the subcommand) and
+    // defaults to the current directory.
+    expect(script).toContain('cd "${2:-$PWD}"');
     expect(script).toContain("mise trust");
     expect(script).toContain("if [ -f mise.lock ]; then");
     expect(script).toContain("--locked");

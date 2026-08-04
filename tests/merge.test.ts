@@ -33,9 +33,56 @@ describe("mergeConfigs", () => {
         },
       },
     ]);
-    expect(Object.keys(merged.mounts).sort()).toEqual(["cache", "workspace"]);
+    expect(Object.keys(merged.mounts).sort()).toEqual(["cache", "project", "workspace"]);
     expect(merged.mounts.cache?.target).toBe("/tmp/b");
     expect(merged.mounts.workspace?.target).toBe("/workspace");
+  });
+
+  test("source \".\" expands to the project root when projectRoot is provided", () => {
+    const merged = mergeConfigs(
+      [{ mounts: { workspace: { kind: "dir", source: ".", target: "/workspace" } } }],
+      "/host/proj",
+    );
+    expect(merged.mounts.workspace?.source).toBe("/host/proj");
+    expect(merged.mounts.workspace?.target).toBe("/workspace");
+  });
+
+  test("default merge with projectRoot adds the same-path project mount", () => {
+    const merged = mergeConfigs([], "/host/proj");
+    expect(merged.mounts.project).toEqual({
+      kind: "dir",
+      source: "/host/proj",
+      target: "/host/proj",
+      options: "rw",
+    });
+    expect(merged.workdirTarget).toBe("/host/proj");
+    expect(merged.identity.workdir).toBe("/host/proj");
+  });
+
+  test("explicit [mounts.project] target overrides the same-path default and drives the workdir", () => {
+    const merged = mergeConfigs(
+      [{ mounts: { project: { target: "/custom" } } }],
+      "/host/proj",
+    );
+    expect(merged.mounts.project?.source).toBe("/host/proj");
+    expect(merged.mounts.project?.target).toBe("/custom");
+    expect(merged.workdirTarget).toBe("/custom");
+    expect(merged.identity.workdir).toBe("/custom");
+  });
+
+  test("explicit workdir key wins over the project-mount-derived workdir", () => {
+    const merged = mergeConfigs([{ workdir: "/elsewhere" }], "/host/proj");
+    expect(merged.mounts.project?.target).toBe("/host/proj");
+    expect(merged.workdirTarget).toBe("/elsewhere");
+    expect(merged.identity.workdir).toBe("/elsewhere");
+  });
+
+  test("without projectRoot, source \".\" stays verbatim and workdir keeps its default", () => {
+    const merged = mergeConfigs([
+      { mounts: { workspace: { kind: "dir", source: ".", target: "/workspace" } } },
+    ]);
+    expect(merged.mounts.workspace?.source).toBe(".");
+    expect(merged.workdirTarget).toBe("/workspace");
   });
 
   test("network.allow inherits and dedupes by default", () => {

@@ -35,11 +35,37 @@ export function expandHome(path: string, homeDir: string = homedir()): string {
   return path;
 }
 
-/** Merge an ordered list of partial configs on top of the built-in defaults. */
-export function mergeConfigs(layers: PartialConfig[]): SandboxConfig {
+/**
+ * Merge an ordered list of partial configs on top of the built-in defaults.
+ *
+ * When `projectRoot` is provided, the built-in `project` mount's `source: "."`
+ * resolves to it, its default target is filled from the resolved source, and
+ * the workdir follows the effective target. Both the "." expansion and the
+ * same-path `project` mount only apply when `projectRoot` is given.
+ */
+export function mergeConfigs(layers: PartialConfig[], projectRoot?: string): SandboxConfig {
   let acc: SandboxConfig = cloneDefaults();
+  // An explicit top-level `workdir` key in any overlay wins over the workdir
+  // derived from the `project` mount (precedence D2).
+  let workdirExplicit = false;
   for (const layer of layers) {
-    acc = mergeLayer(acc, layer);
+    if (layer.workdir !== undefined && layer.workdir.length > 0) {
+      workdirExplicit = true;
+    }
+    acc = mergeLayer(acc, layer, projectRoot);
+  }
+  // Finalize the built-in `project` mount after all overlays are merged: an
+  // explicit overlay target is preserved, anything else falls back to the
+  // resolved source. The workdir follows the effective target.
+  const project = acc.mounts["project"];
+  if (projectRoot !== undefined && project !== undefined) {
+    const source = project.source === "." ? projectRoot : project.source;
+    const target = project.target.length > 0 ? project.target : source;
+    acc.mounts["project"] = { ...project, source, target };
+    if (!workdirExplicit) {
+      acc.workdirTarget = target;
+      acc.identity.workdir = target;
+    }
   }
   return acc;
 }
@@ -50,7 +76,7 @@ function cloneDefaults(): SandboxConfig {
     stock: { ...BUILTIN_DEFAULTS.stock },
     runtime: { ...BUILTIN_DEFAULTS.runtime },
     workdirTarget: BUILTIN_DEFAULTS.workdirTarget,
-    mounts: {},
+    mounts: { ...BUILTIN_DEFAULTS.mounts },
     ports: {},
     network: {
       defaultEgress: BUILTIN_DEFAULTS.network.defaultEgress,
@@ -64,7 +90,11 @@ function cloneDefaults(): SandboxConfig {
   };
 }
 
-function mergeLayer(base: SandboxConfig, overlay: PartialConfig): SandboxConfig {
+function mergeLayer(
+  base: SandboxConfig,
+  overlay: PartialConfig,
+  projectRoot?: string,
+): SandboxConfig {
   const next: SandboxConfig = {
     identity: { ...base.identity },
     stock: { ...base.stock },
@@ -132,10 +162,21 @@ function mergeLayer(base: SandboxConfig, overlay: PartialConfig): SandboxConfig 
     for (const [name, entry] of Object.entries(overlay.mounts)) {
       if (entry === undefined) continue;
       const prev = next.mounts[name];
+      let source = entry.source ?? prev?.source ?? "";
+      // "." is the only magic source value: it resolves to the project
+      // root at merge time so config display and validation see absolute
+      // paths. Other relative sources stay verbatim.
+      if (source === "." && projectRoot !== undefined) {
+        source = projectRoot;
+      }
+      // The built-in `project` mount targets the resolved source by
+      // default; an explicit overlay target overrides it via the
+      // named-table merge.
+      const target = entry.target ?? prev?.target ?? (name === "project" ? source : "");
       next.mounts[name] = {
         kind: entry.kind ?? prev?.kind ?? "dir",
-        source: entry.source ?? prev?.source ?? "",
-        target: entry.target ?? prev?.target ?? "",
+        source,
+        target,
         options: entry.options ?? prev?.options,
         size: (entry.size ?? prev?.size) as `${number}${"M" | "G"}` | undefined,
       };

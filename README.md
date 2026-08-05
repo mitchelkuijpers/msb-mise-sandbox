@@ -1,8 +1,9 @@
 # mise-msb
 
 Run development environments and agent workloads inside disposable
-microVMs — your project mounted live, your secrets scoped to the hosts
-that need them, nothing reachable that you didn't declare.
+microVMs — your project mounted live at the same absolute path as on the host,
+your secrets scoped to the hosts that need them, nothing reachable that you
+didn't declare.
 
 `mise-msb` builds that sandbox from a single checked-in `.sandbox.toml`,
 on top of [microsandbox](https://github.com/microsandbox/microsandbox).
@@ -35,14 +36,10 @@ Stock image contains pinned mise, Docker CE, and prerequisites. Re-run with
 
 ## Use in a project
 
-Create a checked-in `.sandbox.toml` in the project root:
+Create a checked-in `.sandbox.toml` in the project root. The project mount is
+built in, so only declare project-specific settings:
 
 ```toml
-[mounts.workspace]     # live-mount the project at /workspace (nothing is mounted by default)
-kind = "dir"
-source = "."
-target = "/workspace"
-
 [env]
 NODE_ENV = "development"
 
@@ -50,6 +47,22 @@ NODE_ENV = "development"
 from = "GITLAB_TOKEN"
 hosts = ["gitlab.com"]
 ```
+
+The wrapper mounts the project read-write at the same absolute path inside
+the guest and uses that path as its workdir. For example,
+`/Users/alice/Development/foo` stays `/Users/alice/Development/foo`. Edits
+are visible on both sides, and tools that key caches, history, or memories by
+absolute path see the same project identity.
+
+To opt into a different guest path, override the built-in mount:
+
+```toml
+[mounts.project]
+target = "/workspace"
+```
+
+The workdir follows that target unless top-level `workdir` is set explicitly.
+Mount changes require recreating the sandbox.
 
 Then:
 
@@ -68,20 +81,15 @@ Runtime control (`exec`, `ssh`, `start`, `stop`, `remove`, `list`) is plain
 Two opt-in per-user files under `~/.config/mise-msb/` (both XDG-aware).
 
 **`config.toml`** — defaults applied to every sandbox, merged under the
-project's `.sandbox.toml`. Useful for runtime sizing, default mounts, env,
-and secrets:
+project's `.sandbox.toml`. Useful for runtime sizing, additional mounts, env,
+and secrets. The built-in same-path project mount already applies to every
+sandbox, so you do not need to repeat it here:
 
 ```toml
 # ~/.config/mise-msb/config.toml
 [runtime]
 cpus = 8
 memory = "16G"
-
-# Mount every project at /workspace by default
-[mounts.workspace]
-kind = "dir"
-source = "."
-target = "/workspace"
 
 # Mount a host dir into every sandbox
 [mounts.agent]

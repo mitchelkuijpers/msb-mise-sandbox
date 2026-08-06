@@ -73,6 +73,7 @@ export function buildCreateArgv(options: CreateOptions): string[] {
 
   argv.push("--cpus", String(config.runtime.cpus));
   argv.push("--memory", config.runtime.memory);
+  argv.push("--root-disk", config.runtime.rootDisk);
 
   const effectiveWorkdir = workdir ?? config.workdirTarget;
   if (effectiveWorkdir.length > 0) {

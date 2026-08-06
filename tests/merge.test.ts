@@ -124,6 +124,7 @@ describe("mergeConfigs", () => {
     const merged = mergeConfigs([]);
     expect(merged.runtime.cpus).toBe(4);
     expect(merged.runtime.memory).toBe("8G");
+    expect(merged.runtime.rootDisk).toBe("8G");
     expect(merged.network.defaultEgress).toBe("allow");
     expect(merged.network.inherit).toBe(true);
     expect(merged.workdirTarget).toBe("/workspace");
@@ -154,6 +155,27 @@ describe("mergeConfigs", () => {
       { stock: { dockerDataSize: "" } },
     ]);
     expect(merged.stock.dockerDataSize).toBe("20G");
+  });
+
+  test("runtime rootDisk: configured value replaces the default", () => {
+    const merged = mergeConfigs([{ runtime: { rootDisk: "16G" } }]);
+    expect(merged.runtime.rootDisk).toBe("16G");
+  });
+
+  test("runtime rootDisk: later layers win", () => {
+    const merged = mergeConfigs([
+      { runtime: { rootDisk: "16G" } },
+      { runtime: { rootDisk: "32G" } },
+    ]);
+    expect(merged.runtime.rootDisk).toBe("32G");
+  });
+
+  test("runtime rootDisk: empty overlay does not erase", () => {
+    const merged = mergeConfigs([
+      { runtime: { rootDisk: "16G" } },
+      { runtime: { rootDisk: "" } },
+    ]);
+    expect(merged.runtime.rootDisk).toBe("16G");
   });
 
   test("custom image mode requires reference", () => {

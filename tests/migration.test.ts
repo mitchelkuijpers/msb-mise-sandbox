@@ -10,7 +10,7 @@ function baseConfig(overrides: Partial<SandboxConfig> = {}): SandboxConfig {
     ...BUILTIN_DEFAULTS,
     identity: { name: "p", workdir: "/workspace" },
     stock: { ...BUILTIN_DEFAULTS.stock },
-    runtime: { cpus: 4, memory: "8G" },
+    runtime: { cpus: 4, memory: "8G", rootDisk: "8G" },
     workdirTarget: "/workspace",
     mounts: {},
     ports: {},

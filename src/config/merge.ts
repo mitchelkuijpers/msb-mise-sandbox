@@ -141,6 +141,9 @@ function mergeLayer(
     if (overlay.runtime.memory !== undefined && overlay.runtime.memory.length > 0) {
       next.runtime.memory = overlay.runtime.memory as `${number}${"M" | "G"}`;
     }
+    if (overlay.runtime.rootDisk !== undefined && overlay.runtime.rootDisk.length > 0) {
+      next.runtime.rootDisk = overlay.runtime.rootDisk as `${number}${"M" | "G"}`;
+    }
   }
 
   if (overlay.workdir !== undefined && overlay.workdir.length > 0) {

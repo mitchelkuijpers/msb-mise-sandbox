@@ -164,7 +164,7 @@ export function validatePartial(
   }
 
   if (config.runtime !== undefined) {
-    const allowedRuntime = new Set(["cpus", "memory"]);
+    const allowedRuntime = new Set(["cpus", "memory", "rootDisk"]);
     for (const key of Object.keys(config.runtime)) {
       if (!allowedRuntime.has(key)) {
         throw new ConfigValidationError(
@@ -192,23 +192,11 @@ export function validatePartial(
         );
       }
     }
-  }
-
-  if (config.runtime !== undefined) {
-    if (config.runtime.cpus !== undefined) {
-      if (!Number.isInteger(config.runtime.cpus) || config.runtime.cpus <= 0) {
+    if (config.runtime.rootDisk !== undefined) {
+      if (!isValidMemory(config.runtime.rootDisk)) {
         throw new ConfigValidationError(
-          "runtime.cpus must be a positive integer",
-          "runtime.cpus",
-          sourceFile,
-        );
-      }
-    }
-    if (config.runtime.memory !== undefined) {
-      if (!isValidMemory(config.runtime.memory)) {
-        throw new ConfigValidationError(
-          'runtime.memory must match /^\\d+[MG]$/',
-          "runtime.memory",
+          'runtime.rootDisk must match /^\\d+[MG]$/',
+          "runtime.rootDisk",
           sourceFile,
         );
       }
@@ -553,6 +541,12 @@ export function validateMerged(config: SandboxConfig): void {
     throw new ConfigValidationError(
       'runtime.memory must match /^\\d+[MG]$/',
       "runtime.memory",
+    );
+  }
+  if (!isValidMemory(config.runtime.rootDisk)) {
+    throw new ConfigValidationError(
+      'runtime.rootDisk must match /^\\d+[MG]$/',
+      "runtime.rootDisk",
     );
   }
   if (!isValidMemory(config.stock.dockerDataSize)) {

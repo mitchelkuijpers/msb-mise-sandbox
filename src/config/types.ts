@@ -42,6 +42,8 @@ export interface RuntimeConfig {
   cpus: number;
   /** Memory size string (e.g. "8G"). */
   memory: MemorySize;
+  /** Writable root disk size (e.g. "8G"). */
+  rootDisk: MemorySize;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +175,7 @@ export interface PartialStock {
 export interface PartialRuntime {
   cpus?: number;
   memory?: string;
+  rootDisk?: string;
 }
 
 export interface PartialMount {
@@ -244,7 +247,7 @@ export const BUILTIN_DEFAULTS: SandboxConfig = {
     imageMode: "stock",
     dockerDataSize: "10G",
   },
-  runtime: { cpus: 4, memory: "8G" },
+  runtime: { cpus: 4, memory: "8G", rootDisk: "8G" },
   workdirTarget: "/workspace",
   mounts: {
     // Built-in same-path project mount: source "." and an empty target

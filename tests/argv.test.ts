@@ -13,7 +13,7 @@ function baseConfig(overrides: Partial<SandboxConfig> = {}): SandboxConfig {
     ...BUILTIN_DEFAULTS,
     identity: { name: "p", workdir: "/workspace" },
     stock: { ...BUILTIN_DEFAULTS.stock },
-    runtime: { cpus: 4, memory: "8G" },
+    runtime: { cpus: 4, memory: "8G", rootDisk: "8G" },
     workdirTarget: "/workspace",
     mounts: {},
     ports: {},
@@ -35,8 +35,46 @@ describe("buildCreateArgv", () => {
     expect(argv).toContain("p");
     expect(argv).toContain("--cpus");
     expect(argv).toContain("4");
-    expect(argv).toContain("--memory");
-    expect(argv).toContain("8G");
+    const memoryIndex = argv.indexOf("--memory");
+    expect(memoryIndex).toBeGreaterThan(-1);
+    expect(argv[memoryIndex + 1]).toBe("8G");
+    expect(argv[memoryIndex + 2]).toBe("--root-disk");
+    expect(argv[memoryIndex + 3]).toBe("8G");
+  });
+
+  test("non-default rootDisk follows --memory in stock create mode", () => {
+    const argv = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({ runtime: { cpus: 4, memory: "8G", rootDisk: "16G" } }),
+    });
+    const memoryIndex = argv.indexOf("--memory");
+    expect(memoryIndex).toBeGreaterThan(-1);
+    expect(argv[memoryIndex + 1]).toBe("8G");
+    expect(argv[memoryIndex + 2]).toBe("--root-disk");
+    expect(argv[memoryIndex + 3]).toBe("16G");
+    // Stock mode still injects its derived mounts.
+    expect(argv).toContain("p-mise-v1:/mise");
+    expect(argv).toContain("p-docker-data:/var/lib/docker:kind=disk,size=10G");
+  });
+
+  test("non-default rootDisk follows --memory in custom image mode", () => {
+    const argv = buildCreateArgv({
+      image: "p:dev",
+      name: "p",
+      config: baseConfig({
+        stock: { imageMode: "custom", customImage: "my-project:v2", dockerDataSize: "10G" },
+        runtime: { cpus: 4, memory: "8G", rootDisk: "32G" },
+      }),
+    });
+    const memoryIndex = argv.indexOf("--memory");
+    expect(memoryIndex).toBeGreaterThan(-1);
+    expect(argv[memoryIndex + 1]).toBe("8G");
+    expect(argv[memoryIndex + 2]).toBe("--root-disk");
+    expect(argv[memoryIndex + 3]).toBe("32G");
+    // Custom mode skips the stock-derived mounts.
+    expect(argv.join(" ")).not.toContain("p-mise-v1");
+    expect(argv.join(" ")).not.toContain("p-docker-data");
   });
 
   test("emits sorted env and labels", () => {
@@ -285,7 +323,7 @@ describe("buildCreateArgv", () => {
     });
     const argv = buildCreateArgv({ image: "p:dev", name: "p", config: cfg });
     const expected =
-      "msb create p:dev --name p --cpus 4 --memory 8G --workdir /workspace " +
+      "msb create p:dev --name p --cpus 4 --memory 8G --root-disk 8G --workdir /workspace " +
       "--env NODE_ENV=production --net-default deny --net-rule allow@github.com:tcp:443 " +
       "--secret K@api.example --mount-named cache:/cache --mount-named p-mise-v1:/mise " +
       "--mount-named p-docker-data:/var/lib/docker:kind=disk,size=10G " +
@@ -326,7 +364,7 @@ describe("buildCreateArgv", () => {
 
     const tmp = guestGitconfigTempPath("p");
     const expected =
-      "msb create p:dev --name p --cpus 4 --memory 8G --workdir /workspace " +
+      "msb create p:dev --name p --cpus 4 --memory 8G --root-disk 8G --workdir /workspace " +
       "--net-default allow --mount-named p-mise-v1:/mise " +
       "--mount-named p-docker-data:/var/lib/docker:kind=disk,size=10G " +
       `--mount-file ${SIGNING_KEY}:/etc/mise-msb/signing/id_ed25519_sandbox:ro ` +

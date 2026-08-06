@@ -90,6 +90,7 @@ sandbox, so you do not need to repeat it here:
 [runtime]
 cpus = 8
 memory = "16G"
+rootDisk = "8G"
 
 # Mount a host dir into every sandbox
 [mounts.agent]

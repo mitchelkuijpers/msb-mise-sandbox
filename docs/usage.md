@@ -141,7 +141,17 @@ compatibility.
 [runtime]
 cpus = 4                # positive integer
 memory = "8G"           # M or G suffix
+rootDisk = "8G"         # persistent root disk size (M or G suffix)
 ```
+
+`rootDisk` sizes the persistent, wrapper-managed ext4 writable root disk.
+Changes apply only to newly created or recreated sandboxes — existing
+sandboxes are neither resized nor silently recreated. The root disk is
+separate from VM memory (`runtime.memory`), from `/tmp` (its own tmpfs),
+and from `/var/lib/docker` (a disk-backed volume sized by
+`stock.dockerDataSize`). microsandbox v0.6.6+ maps it to `--root-disk`;
+the older `--oci-upper-size` flag is deprecated, and tmpfs-style root
+disks are unsupported.
 
 ### `[network]`
 
@@ -397,6 +407,7 @@ printed sequence.
 ```bash
 $ mise-msb run my-project -- bun test --print
 msb create mise-msb-base:v4 --name my-project --cpus 4 --memory 8G \
+    --root-disk 8G \
     --workdir /Users/alice/Development/foo \
     --mount-dir /Users/alice/Development/foo:/Users/alice/Development/foo:rw \
     --mount-named my-project-mise-v1:/mise \
@@ -437,6 +448,7 @@ translated to per-project `.sandbox.toml` files:
 [runtime]
 cpus = 4
 memory = "8G"
+rootDisk = "8G"
 
 [network]
 defaultEgress = "deny"

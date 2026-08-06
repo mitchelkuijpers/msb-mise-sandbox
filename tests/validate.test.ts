@@ -2,16 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { validateLayers, validateMerged, validatePartial } from "../src/config/validate.js";
 import { mergeConfigs } from "../src/config/merge.js";
 import { loadConfig } from "../src/config/index.js";
-import type { SandboxConfig } from "../src/config/types.js";
+import type { PartialConfig, SandboxConfig } from "../src/config/types.js";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 describe("validatePartial", () => {
   test("rejects unknown keys under [runtime]", () => {
-    expect(() =>
-      validatePartial({ runtime: { memroy: "8G" } as unknown as { cpus?: number; memory?: string } }),
-    ).toThrow(/runtime\.memroy|unknown/);
+    for (const key of ["memroy", "diskSize"]) {
+      expect(() =>
+        validatePartial({ runtime: { [key]: "8G" } } as unknown as PartialConfig),
+      ).toThrow(/runtime\.(memroy|diskSize)|unknown/);
+    }
   });
 
   test("rejects non-integer cpus", () => {
@@ -20,6 +22,17 @@ describe("validatePartial", () => {
 
   test("rejects invalid memory format", () => {
     expect(() => validatePartial({ runtime: { memory: "8X" } })).toThrow(/runtime\.memory/);
+  });
+
+  test("accepts valid rootDisk sizes", () => {
+    expect(() => validatePartial({ runtime: { rootDisk: "512M" } })).not.toThrow();
+    expect(() => validatePartial({ runtime: { rootDisk: "8G" } })).not.toThrow();
+  });
+
+  test("rejects malformed rootDisk sizes", () => {
+    for (const rootDisk of ["8GB", "8", "abc"]) {
+      expect(() => validatePartial({ runtime: { rootDisk } })).toThrow(/runtime\.rootDisk/);
+    }
   });
 
   test("rejects non-absolute mount target", () => {
@@ -145,7 +158,7 @@ describe("validateMerged", () => {
     const merged: SandboxConfig = {
       identity: { name: "p", workdir: "/workspace" },
       stock: { imageMode: "stock", dockerDataSize: "10G" },
-      runtime: { cpus: 4, memory: "8G" },
+      runtime: { cpus: 4, memory: "8G", rootDisk: "8G" },
       workdirTarget: "/workspace",
       mounts: {},
       ports: {},
@@ -164,7 +177,7 @@ describe("validateMerged", () => {
     const merged: SandboxConfig = {
       identity: { name: "p", workdir: "/workspace" },
       stock: { imageMode: "stock", dockerDataSize: "invalid" as unknown as `${number}${"M" | "G"}` },
-      runtime: { cpus: 4, memory: "8G" },
+      runtime: { cpus: 4, memory: "8G", rootDisk: "8G" },
       workdirTarget: "/workspace",
       mounts: {},
       ports: {},
@@ -175,6 +188,27 @@ describe("validateMerged", () => {
       signing: { enabled: false },
     };
     expect(() => validateMerged(merged)).toThrow(/stock\.dockerDataSize/);
+  });
+
+  test("rejects invalid runtime rootDisk", () => {
+    const merged: SandboxConfig = {
+      identity: { name: "p", workdir: "/workspace" },
+      stock: { imageMode: "stock", dockerDataSize: "10G" },
+      runtime: {
+        cpus: 4,
+        memory: "8G",
+        rootDisk: "invalid" as unknown as `${number}${"M" | "G"}`,
+      },
+      workdirTarget: "/workspace",
+      mounts: {},
+      ports: {},
+      network: { defaultEgress: "allow", allow: [], inherit: true },
+      env: {},
+      secrets: {},
+      labels: {},
+      signing: { enabled: false },
+    };
+    expect(() => validateMerged(merged)).toThrow(/runtime\.rootDisk/);
   });
 
   test("stock mode rejects mounts targeting reserved stock paths", () => {

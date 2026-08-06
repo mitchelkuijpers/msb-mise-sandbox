@@ -17,7 +17,7 @@ function makeConfig(key: string | undefined, enabled = true): SandboxConfig {
   return {
     identity: { name: "p", workdir: "/workspace" },
     stock: { imageMode: "stock", dockerDataSize: "10G" },
-    runtime: { cpus: 4, memory: "8G" },
+    runtime: { cpus: 4, memory: "8G", rootDisk: "8G" },
     workdirTarget: "/workspace",
     mounts: {},
     ports: {},

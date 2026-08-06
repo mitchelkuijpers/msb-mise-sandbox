@@ -421,8 +421,10 @@ mise-msb install
 mise-msb install --force
 ```
 
-The install command does not modify shell startup files. If
-`~/.local/bin` is not on `$PATH`, a one-line hint is printed after a
+The linked launcher is a POSIX sh bootstrap that resolves this repo's
+pinned Bun through mise, so the wrapper works without a global Bun
+installation. The install command does not modify shell startup files.
+If `~/.local/bin` is not on `$PATH`, a one-line hint is printed after a
 successful install.
 
 ## Migration from `projects.json`

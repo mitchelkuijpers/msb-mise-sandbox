@@ -15,5 +15,5 @@ bun = "latest"
 experimental = true
 
 [tasks.install]
-description = "Symlink the mise-msb wrapper into ~/.local/bin"
-run = "bun bin/mise-msb install"
+description = "Symlink the mise-msb launcher into ~/.local/bin"
+run = "./bin/mise-msb install"

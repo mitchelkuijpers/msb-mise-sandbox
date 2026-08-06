@@ -101,6 +101,9 @@ not the persistent mise volume.
 ## Module Layout
 
 ```
+bin/
+  mise-msb                POSIX sh bootstrap (symlink target): resolves
+                          repo-pinned bun via mise, execs src/mise-msb.ts
 src/
   mise-msb.ts               entry point
   stock-image/

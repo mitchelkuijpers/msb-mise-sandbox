@@ -207,7 +207,10 @@ sources are printable; file contents are never read or printed.
 ## Installation Safety
 
 The wrapper's `install` command creates a symlink at
-`~/.local/bin/mise-msb` pointing to the repository entry point. It:
+`~/.local/bin/mise-msb` pointing to a checked-in POSIX sh bootstrap in
+the repository. The bootstrap resolves the repo's pinned Bun through
+mise and hands off to the TypeScript entrypoint — no global Bun
+installation is involved. It:
 
 - Does not edit `~/.zshrc`, `~/.bashrc`, `~/.profile`, or any other
   dotfile.

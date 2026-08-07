@@ -39,6 +39,50 @@ mise-msb exec my-project -- bun test
 mise-msb shell my-project
 ```
 
+## Remote SSH (editors)
+
+Every sandbox is reachable over SSH as the host `<name>.msb`. One-time
+setup on the host:
+
+```bash
+mise-msb ssh-config
+```
+
+The wrapper prints the OpenSSH block below but never installs it — paste
+it near the **top** of `~/.ssh/config`, before any broad `Host *` block.
+OpenSSH applies the first matching value, so a later wildcard would
+override the transport options:
+
+```sshconfig
+Host *.msb
+    User root
+    ProxyCommand mise-msb ssh-proxy %n
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+```
+
+How it wires together:
+
+```text
+ssh <name>.msb
+  -> mise-msb ssh-proxy <name>.msb   # ProxyCommand, %n expands to <name>.msb
+  -> msb ssh serve <name> --stdio    # raw msb stdio transport
+```
+
+The wildcard covers every sandbox, including ones created directly with
+`msb`. `mise-msb create` prints the alias hint (`ssh <name>.msb`) after a
+successful creation. In VS Code Remote-SSH, select `<name>.msb` as the
+host and the remote window opens in the sandbox.
+
+The alias only wires up the transport. Your public key must already be
+authorized in the sandbox through microsandbox's normal mechanism (`msb ssh`
+key authorization) — the alias does not grant access by itself.
+
+Troubleshooting: `ssh -G <name>.msb` prints the effective options for the
+host. If the host-key options (`StrictHostKeyChecking`,
+`UserKnownHostsFile`) don't show up, the block is sitting below a
+conflicting `Host *` — move it above.
+
 `mise-msb config` shows the resolved project mount, e.g.:
 
 ```json

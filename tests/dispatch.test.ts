@@ -35,7 +35,15 @@ describe("reduced CLI command surface", () => {
 
     expect(result.exitCode).toBe(0);
     const output = result.stdout.toString();
-    for (const command of ["setup", "create", "config", "signing", "install"]) {
+    for (const command of [
+      "setup",
+      "create",
+      "config",
+      "signing",
+      "install",
+      "ssh-proxy",
+      "ssh-config",
+    ]) {
       expect(output).toContain(`  ${command}`);
     }
     for (const command of REMOVED_COMMANDS) {

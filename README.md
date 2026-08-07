@@ -74,7 +74,35 @@ msb stop my-project && msb remove my-project   # teardown; volumes preserved
 ```
 
 Runtime control (`exec`, `ssh`, `start`, `stop`, `remove`, `list`) is plain
-`msb` — the wrapper intentionally only covers setup/create/config.
+`msb` — the wrapper only covers setup/create/config; `ssh-proxy` and
+`ssh-config` (next section) are SSH integration, not lifecycle.
+
+## Remote SSH (editors)
+
+Every sandbox is reachable as the SSH host `<name>.msb`. One-time setup:
+
+```bash
+mise-msb ssh-config        # prints the Host *.msb block
+```
+
+Add the printed block near the **top** of `~/.ssh/config`, before any broad
+`Host *` block — OpenSSH applies the first matching value, so a later
+wildcard would override the transport. Then `ssh <name>.msb` works for
+every sandbox, including ones created with raw `msb`:
+
+```bash
+ssh my-project.msb
+```
+
+In VS Code Remote-SSH, select `<name>.msb` as the host.
+
+The alias only wires up the transport. Your public key must already be
+authorized in the sandbox through microsandbox's normal mechanism (`msb ssh`
+key authorization) — the alias does not grant access by itself.
+
+Troubleshooting: `ssh -G <name>.msb` prints the effective options for the
+host. If the host-key options don't apply, the block is sitting below a
+conflicting `Host *` — move it above.
 
 ## Personal setup (optional)
 

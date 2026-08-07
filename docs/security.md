@@ -204,6 +204,36 @@ host) and, when the guest and source names differ, the literal
 is no `--no-redact` escape hatch. Personal bootstrap hashes and mount
 sources are printable; file contents are never read or printed.
 
+## `.msb` SSH Alias Security
+
+The `Host *.msb` block printed by `mise-msb ssh-config` sets
+`StrictHostKeyChecking no` and `UserKnownHostsFile /dev/null`: SSH
+host-key authentication is **disabled** for `.msb` aliases. This is
+acceptable only because of what an alias actually is:
+
+- **No network connection** — `ProxyCommand mise-msb ssh-proxy %n`
+  executes the local wrapper directly, which spawns
+  `msb ssh serve <name> --stdio`, a stdio bridge to a local microVM.
+  There is no remote TCP listener to impersonate; the host is a local
+  subprocess.
+- **Pinned keys go stale** — microsandbox deletes a sandbox's per-sandbox
+  host key when the sandbox is recreated, so pinned `known_hosts`
+  entries would routinely mismatch and block the alias until manually
+  removed.
+
+The risk is only in misuse:
+
+- **Keep the block scoped to `Host *.msb`** — these options MUST NOT be
+  copied into a global `Host *` block or applied to ordinary remote
+  hosts. Doing so would disable MITM protection for real network
+  connections.
+
+SSH **authorization is unchanged and separate**: the user still
+authenticates to the sandbox with their own key. Host-key checking
+verifies the server, while user authentication verifies the user — the
+two are distinct, and disabling host-key checking for `.msb` aliases
+does not weaken key-based authentication to the sandbox.
+
 ## Installation Safety
 
 The wrapper's `install` command creates a symlink at

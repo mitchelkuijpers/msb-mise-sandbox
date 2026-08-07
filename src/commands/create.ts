@@ -70,4 +70,10 @@ export async function runCreateCommand(
       }
     }
   }
+
+  // Only reachable when create and all bootstrap stages exited 0 (print mode returned earlier).
+  console.log(
+    `Remote SSH: ssh ${name}.msb\n` +
+    `  One-time setup: add the block from \`mise-msb ssh-config\` to ~/.ssh/config`,
+  );
 }

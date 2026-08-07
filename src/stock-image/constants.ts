@@ -1,7 +1,10 @@
 // Generation 3: fixes personal bootstrap and exposes /root/.local/bin on PATH.
 // Generation 4: drops the baked-in WORKDIR; the project bootstrap takes the
 // resolved workdir as an argument and mounts the project at its host path.
-export const STOCK_IMAGE_GENERATION = 4;
+// Generation 5: bundles native Google Chrome for OMP browser automation.
+// Generation 6: adds libnss3-tools and a browser-trust bootstrap stage that
+// imports runtime local CAs into Chrome's NSS database.
+export const STOCK_IMAGE_GENERATION = 6;
 
 export const STOCK_IMAGE_TAG = `mise-msb-base:v${STOCK_IMAGE_GENERATION}`;
 

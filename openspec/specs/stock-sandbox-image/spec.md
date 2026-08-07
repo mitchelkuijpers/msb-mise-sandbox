@@ -4,11 +4,15 @@
 TBD - created by archiving change add-personalized-agent-runtime. Update Purpose after archive.
 ## Requirements
 ### Requirement: Explicit local stock image setup
-The CLI SHALL provide `setup` to build a repository-owned Ubuntu stock Containerfile with host Docker, save the resulting image, and load it into microsandbox with `msb image load`. The stock image SHALL contain pinned mise, Docker CE, common tool-installation prerequisites, and the versioned runtime helpers required by stock lifecycle bootstrap. Setup SHALL NOT publish the image or require a project-owned registry.
+The CLI SHALL provide `setup` to build a repository-owned Ubuntu stock Containerfile with host Docker, save the resulting image, and load it into microsandbox with `msb image load`. The stock image SHALL contain pinned mise, Docker CE, common tool-installation prerequisites, native Google Chrome for agent browser automation, and the versioned runtime helpers required by stock lifecycle bootstrap. Setup SHALL NOT publish the image or require a project-owned registry.
 
 #### Scenario: First setup builds and loads the stock image
 - **WHEN** the expected stock image generation is not loaded and the user runs `mise-msb setup`
 - **THEN** the CLI builds the stock Containerfile, saves the image archive, loads the versioned local tag with `msb image load`, and reports that tag
+
+#### Scenario: Stock image supports agent browser automation
+- **WHEN** setup builds the stock image for amd64 or arm64
+- **THEN** the image contains a native Google Chrome executable that browser-capable agents can use as a system browser
 
 #### Scenario: Warm setup is a no-op
 - **WHEN** the expected stock image generation is already loaded and the user runs `mise-msb setup`
@@ -86,4 +90,35 @@ The stock image generation SHALL be bumped whenever bundled runtime helper behav
 
 - **WHEN** the generation constant is bumped and the previous generation's image is loaded
 - **THEN** `mise-msb setup` builds and loads the new generation's tag rather than skipping
+
+### Requirement: Stock browser trusts runtime local certificate authorities
+The stock lifecycle SHALL make runtime-provided local certificate authorities trusted by the stock image's native Google Chrome before project bootstrap or user commands execute. It SHALL preserve normal certificate verification rather than globally accepting invalid certificates, SHALL apply the trust initialization idempotently, and SHALL fail before project or user execution with actionable diagnostics when a provided local certificate authority cannot be applied. Custom images SHALL remain responsible for their own browser trust integration.
+
+#### Scenario: Fresh stock browser navigates intercepted HTTPS
+- **WHEN** a fresh stock sandbox receives a runtime local certificate authority and Chrome navigates to an allowed HTTPS destination whose certificate chains to that authority
+- **THEN** Chrome validates the connection and renders the destination without disabling certificate verification
+
+#### Scenario: Existing local browser trust is preserved
+- **WHEN** trusted personal bootstrap has already established browser certificate state before stock browser trust initialization
+- **THEN** the lifecycle adds or refreshes its owned local certificate entries without deleting unrelated browser trust entries
+
+#### Scenario: Browser trust initialization is repeatable
+- **WHEN** stock browser trust initialization runs again with unchanged local certificate authorities
+- **THEN** it completes successfully without accumulating duplicate trust entries
+
+#### Scenario: Runtime certificate authority rotates
+- **WHEN** a runtime local certificate authority changes while retaining the same wrapper-owned identity
+- **THEN** the next stock browser trust initialization replaces the stale browser trust entry with the current certificate
+
+#### Scenario: No runtime local certificate authorities
+- **WHEN** stock browser trust initialization finds no runtime-provided local certificate authorities
+- **THEN** it completes successfully without weakening Chrome certificate verification
+
+#### Scenario: Runtime certificate authority cannot be applied
+- **WHEN** a runtime-provided local certificate authority cannot be added to Chrome's trust database
+- **THEN** stock creation exits non-zero before project bootstrap or user commands and identifies browser trust initialization as the failed stage
+
+#### Scenario: Custom image owns browser trust
+- **WHEN** custom image mode is selected
+- **THEN** the wrapper does not apply the stock browser trust initialization or guarantee Chrome compatibility
 

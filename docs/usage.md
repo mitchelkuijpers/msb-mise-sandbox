@@ -126,7 +126,7 @@ customImage = "my-project:dev" # required when imageMode = "custom"
 dockerDataSize = "10G"         # Docker data volume size (M or G suffix)
 ```
 
-Stock mode uses the wrapper's versioned local stock image (`mise-msb-base:v4`),
+Stock mode uses the wrapper's versioned local stock image (`mise-msb-base:v6`),
 injects persistent named volumes for mise (`<sandbox>-mise-v1:/mise`) and
 Docker data (`<sandbox>-docker-data:/var/lib/docker`), and runs Docker
 readiness and mise bootstrap automatically.
@@ -355,16 +355,18 @@ unchanged warm-start invocations skip it.
 saves the resulting archive, and loads it with `msb image load`. Warm setup
 skips when the expected generation is already loaded. `setup --force` rebuilds.
 
-### Migrating to stock image v4
+### Migrating to stock image v6
 
-To pick up the same-path project mount (the image no longer bakes in a
-`WORKDIR` and the project bootstrap receives the resolved workdir):
+Stock image v6 adds `libnss3-tools` and the browser-trust bootstrap stage on
+top of v5's bundled native Google Chrome. Existing v5 sandboxes keep the old
+root filesystem until recreated — stop/start alone is not enough.
 
-1. Run `mise-msb setup`.
+1. Run `mise-msb setup` to build and load v6.
 2. Stop, remove, and recreate existing stock sandboxes.
 
-Named mise and Docker volumes persist across recreation, but files left only in
-the writable sandbox layer do not.
+The named mise volume (`<sandbox>-mise-v1:/mise`) and the named Docker volume
+(`<sandbox>-docker-data:/var/lib/docker`) persist across recreation, but files
+left only in the writable sandbox layer do not.
 
 ### Bootstrap Stages
 
@@ -374,11 +376,25 @@ After `create` or `start`, stock mode runs these stages in order:
 2. **Personal bootstrap** — runs `mise-msb-bootstrap personal <hash>` when
    personal configuration exists (skips on unchanged warm-start) and performs
    the full personal `mise bootstrap`, including tools
-3. **Project bootstrap** — `mise install --locked` when `mise.lock` exists,
+3. **Browser trust** — `mise-msb-bootstrap browser-trust` imports
+   runtime-provided local CA certificates from
+   `/usr/local/share/ca-certificates` into the NSS database the bundled
+   Chrome uses (legacy `$HOME/.pki/nssdb` when it already exists, otherwise
+   the modern `$HOME/.local/share/pki/nssdb`), with wrapper-owned nicknames
+   and `C,,` SSL CA trust. The stage is idempotent: repeat runs converge,
+   rotated certificates replace stale wrapper-owned entries, an empty CA
+   directory is a no-op, and unrelated personal NSS entries are preserved.
+   Certificate verification stays enabled — Chrome is never run with
+   `--ignore-certificate-errors`. An unimportable local CA fails creation
+   before project bootstrap with the certificate and database paths in the
+   error
+4. **Project bootstrap** — `mise install --locked` when `mise.lock` exists,
    otherwise `mise install`, run in the resolved workdir (the same-path
    project mount by default)
 
 Any stage failure stops the sequence and propagates the exit code.
+
+Browser trust is stock-only; custom image mode owns its browser trust itself.
 
 ### Persistent Volumes
 
@@ -406,7 +422,7 @@ printed sequence.
 
 ```bash
 $ mise-msb run my-project -- bun test --print
-msb create mise-msb-base:v4 --name my-project --cpus 4 --memory 8G \
+msb create mise-msb-base:v6 --name my-project --cpus 4 --memory 8G \
     --root-disk 8G \
     --workdir /Users/alice/Development/foo \
     --mount-dir /Users/alice/Development/foo:/Users/alice/Development/foo:rw \
@@ -416,6 +432,8 @@ msb create mise-msb-base:v4 --name my-project --cpus 4 --memory 8G \
 msb exec my-project -- docker-up
 
 msb exec my-project -- mise-msb-bootstrap personal <hash>
+
+msb exec my-project -- mise-msb-bootstrap browser-trust
 
 msb exec my-project -- mise-msb-bootstrap project /Users/alice/Development/foo
 

@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { CONTAINERFILE_PATH } from "../src/stock-image/constants.js";
+import {
+  CONTAINERFILE_PATH,
+  STOCK_IMAGE_GENERATION,
+  STOCK_IMAGE_TAG,
+} from "../src/stock-image/constants.js";
 
 describe("Containerfile", () => {
-  test("exists and keeps /root/.local/bin between mise and system paths", () => {
+  test("exists, bundles Chrome, and keeps /root/.local/bin between mise and system paths", () => {
     const content = readFileSync(CONTAINERFILE_PATH, "utf8");
     const pathLine = content.match(/^ENV PATH=.*$/m)?.[0] ?? "";
     expect(content).toContain("FROM ubuntu:24.04");
@@ -12,6 +16,9 @@ describe("Containerfile", () => {
     expect(content).toContain("docker-up");
     expect(content).toContain("mise-msb-bootstrap");
     expect(content).toContain("STOCK_GENERATION");
+    expect(content).toContain("amd64|arm64");
+    expect(content).toContain("google-chrome-stable_current_${chrome_arch}.deb");
+    expect(content).toContain("google-chrome --version");
     // The image owns no workdir: the wrapper always passes --workdir,
     // so the guest cwd follows the same-path project mount.
     expect(content).not.toContain("WORKDIR");
@@ -21,6 +28,10 @@ describe("Containerfile", () => {
     expect(pathLine.indexOf("/root/.local/bin")).toBeLessThan(pathLine.indexOf("/usr/local/bin"));
     // dockerd needs iptables/nft from sbin dirs.
     expect(content).toContain("/usr/sbin");
+  });
+  test("bundles libnss3-tools for NSS certificate tooling", () => {
+    const content = readFileSync(CONTAINERFILE_PATH, "utf8");
+    expect(content).toContain("libnss3-tools");
   });
 });
 
@@ -64,5 +75,25 @@ describe("mise-msb-bootstrap", () => {
     expect(script).toContain("env -u MISE_GLOBAL_CONFIG_FILE mise install --locked");
     expect(script).toContain("else");
     expect(script).toContain("mise install");
+  });
+  test("browser-trust imports local CAs into Chrome's NSS database", () => {
+    const script = readFileSync(
+      new URL("../src/stock-image/mise-msb-bootstrap", import.meta.url),
+      "utf8",
+    );
+    expect(script).toContain("browser-trust)");
+    expect(script).toContain("/usr/local/share/ca-certificates");
+    expect(script).toContain("certutil -A");
+    expect(script).toContain('"C,,"');
+    expect(script).toContain(".pki/nssdb");
+    expect(script).toContain(".local/share/pki/nssdb");
+    expect(script).toContain("mise-msb-local-ca-");
+  });
+});
+
+describe("stock image generation", () => {
+  test("is pinned to generation 6 (browser-trust)", () => {
+    expect(STOCK_IMAGE_GENERATION).toBe(6);
+    expect(STOCK_IMAGE_TAG).toBe("mise-msb-base:v6");
   });
 });

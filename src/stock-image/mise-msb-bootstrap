@@ -5,13 +5,15 @@ MARKER_BASE="/var/lib/mise-msb"
 COMMAND="${1:-}"
 
 usage() {
-    echo "Usage: mise-msb-bootstrap <personal|project> [<hash>]"
+    echo "Usage: mise-msb-bootstrap <personal|project|browser-trust> [<hash>]"
     echo ""
     echo "Commands:"
     echo "  personal <hash>   Run full personal bootstrap from MISE_GLOBAL_CONFIG_FILE"
     echo "                    Skips if the sandbox-local marker matches the hash"
     echo "  project [workdir] Trust and install project tools (default: current dir)"
     echo "                    Uses --locked when mise.lock exists"
+    echo "  browser-trust     Import local CAs from /usr/local/share/ca-certificates"
+    echo "                    into Chrome's NSS database (SSL CA trust)"
     exit 1
 }
 
@@ -42,6 +44,59 @@ case "$COMMAND" in
         else
             mise install
         fi
+        ;;
+    browser-trust)
+        # Import runtime-provided local CAs into Chrome's NSS database so the
+        # stock browser trusts microsandbox TLS interception.
+        # MISE_MSB_CA_DIR overrides the local CA source directory (the
+        # browser-trust tests use it to exercise the empty-CA case hermetically);
+        # the production default is Debian's local CA directory.
+        CA_DIR="${MISE_MSB_CA_DIR:-/usr/local/share/ca-certificates}"
+        CERTS=()
+        if [ -d "$CA_DIR" ]; then
+            while IFS= read -r cert; do
+                CERTS+=("$cert")
+            done < <(find "$CA_DIR" -maxdepth 1 -type f -name '*.crt' | sort)
+        fi
+        if [ "${#CERTS[@]}" -eq 0 ]; then
+            echo "mise-msb-bootstrap: browser-trust: no local CA certificates in $CA_DIR; nothing to do"
+            exit 0
+        fi
+
+        # Chrome's NSS database selection: a legacy database at ~/.pki/nssdb
+        # wins; otherwise use the modern default (Chrome M146+).
+        DB_DIR="$HOME/.local/share/pki/nssdb"
+        if [ -d "$HOME/.pki/nssdb" ]; then
+            DB_DIR="$HOME/.pki/nssdb"
+        fi
+        if [ ! -d "$DB_DIR" ]; then
+            mkdir -p "$DB_DIR"
+            if ! certutil -N --empty-password -d "sql:$DB_DIR"; then
+                echo "mise-msb-bootstrap: browser-trust: failed to initialize NSS database at $DB_DIR" >&2
+                exit 1
+            fi
+        fi
+
+        for cert in "${CERTS[@]}"; do
+            base="$(basename "$cert" .crt)"
+            # Keep only characters certutil accepts comfortably in nicknames.
+            nick="mise-msb-local-ca-$(printf '%s' "$base" | tr -c 'A-Za-z0-9._-' '-')"
+            # A missing prior entry is expected on first import; tolerate
+            # only that case from certutil -D.
+            del_err="$(certutil -D -n "$nick" -d "sql:$DB_DIR" 2>&1)" || {
+                case "$del_err" in
+                    *"not found"*|*"could not find"*) ;;
+                    *)
+                        echo "mise-msb-bootstrap: browser-trust: failed to delete existing entry for $cert in NSS database $DB_DIR: $del_err" >&2
+                        exit 1
+                        ;;
+                esac
+            }
+            if ! certutil -A -n "$nick" -t "C,," -i "$cert" -d "sql:$DB_DIR"; then
+                echo "mise-msb-bootstrap: browser-trust: failed to import $cert into NSS database $DB_DIR" >&2
+                exit 1
+            fi
+        done
         ;;
     *)
         usage

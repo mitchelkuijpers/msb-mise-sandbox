@@ -124,6 +124,13 @@ export function planStockBootstrapStages(input: StockBootstrapInput): string[][]
     ]));
   }
 
+  // Stage: browser trust (stock mode only) — import runtime local CAs into
+  // Chrome's NSS database after personal bootstrap establishes NSS state and
+  // before project bootstrap or user commands can start a browser.
+  if (config.stock.imageMode === "stock") {
+    groups.push(buildExecArgv(name, [BOOTSTRAP_HELPER, "browser-trust"]));
+  }
+
   // Stage: project bootstrap, run in the resolved workdir (the
   // same-path project mount target by default).
   groups.push(buildExecArgv(name, [BOOTSTRAP_HELPER, "project", config.workdirTarget]));
@@ -158,17 +165,24 @@ export interface RunSequenceInput {
   signingKey?: ValidatedSigningKey;
   /** Committer identity for the generated guest gitconfig (signing mode). */
   gitIdentity?: GitIdentity;
+  /**
+   * Optional state probe, injectable so planning stays deterministic
+   * without a host `msb` binary. Defaults to `querySandboxState`.
+   */
+  queryState?: (name: string) => SandboxState;
 }
 
 export function planRunSequence(input: RunSequenceInput): RunSequence {
   const name = input.name ?? input.config.identity.name;
   const groups: string[][] = [];
 
+  // Probe the sandbox state only when a command will actually run. The
+  // probe defaults to the `msb list` subprocess check and is injectable
+  // so planning tests don't depend on a host binary.
+  const queryState = input.queryState ?? querySandboxState;
   let state: SandboxState = "absent";
-  if (!input.config.command && !input.commandArgv) {
-    state = "absent";
-  } else {
-    state = querySandboxState(name);
+  if (input.config.command || input.commandArgv) {
+    state = queryState(name);
   }
 
   if (state === "absent") {

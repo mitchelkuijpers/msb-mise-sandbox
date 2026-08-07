@@ -9,7 +9,7 @@
 # Language runtimes (core backends, pinned major versions)
 node = "24"
 bun = "latest"
-"npm:@fission-ai/openspec" = "latest"
+"npm:@fission-ai/openspec" = "1.8.0"
 
 [settings]
 experimental = true

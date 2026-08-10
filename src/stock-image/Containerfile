@@ -14,7 +14,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     libatomic1 \
     libnss3-tools \
-    lsb-release \
     openssh-client \
     sudo \
     xz-utils \
@@ -37,9 +36,18 @@ RUN chrome_arch="$(dpkg --print-architecture)" \
 RUN curl -fsSL https://mise.run | MISE_VERSION=${MISE_VERSION} sh \
     && ln -s /root/.local/bin/mise /usr/local/bin/mise
 
-RUN mkdir -p /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list \
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && . /etc/os-release \
+    && printf '%s\n' \
+        "Types: deb" \
+        "URIs: https://download.docker.com/linux/ubuntu" \
+        "Suites: ${UBUNTU_CODENAME:-$VERSION_CODENAME}" \
+        "Components: stable" \
+        "Architectures: $(dpkg --print-architecture)" \
+        "Signed-By: /etc/apt/keyrings/docker.asc" \
+        > /etc/apt/sources.list.d/docker.sources \
     && apt-get update && apt-get install -y --no-install-recommends \
     docker-ce \
     docker-ce-cli \

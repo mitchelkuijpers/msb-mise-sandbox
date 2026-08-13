@@ -5,6 +5,17 @@ MAX_WAIT=30
 INTERVAL=2
 
 if ! pidof dockerd > /dev/null 2>&1; then
+    # /run lives on the persistent root disk, so an unclean VM stop leaves
+    # daemon runtime files behind. The recorded PIDs can still exist as
+    # unreaped zombies (the microVM init never reaps orphans), and dockerd's
+    # liveness checks then treat the old daemon as still running and refuse
+    # to start. pidof already proved no dockerd process exists, so removing
+    # the stale pidfiles and sockets before launching is safe.
+    rm -f /var/run/docker.pid /var/run/docker.sock
+    rm -f /var/run/docker/containerd/containerd.pid \
+        /var/run/docker/containerd/containerd.sock \
+        /var/run/docker/containerd/containerd.sock.ttrpc \
+        /var/run/docker/containerd/containerd-debug.sock
     dockerd > /var/log/dockerd.log 2>&1 &
 fi
 

@@ -45,6 +45,12 @@ describe("docker-up", () => {
     expect(script).toContain("docker info");
     expect(script).toContain("MAX_WAIT");
     expect(script).toContain("#!/bin/bash");
+    // After an unclean VM stop, /var/run/docker.pid persists and can point at
+    // an unreaped zombie; dockerd then refuses to start. The helper must
+    // clear stale runtime files before launching the daemon.
+    expect(script).toContain("rm -f /var/run/docker.pid /var/run/docker.sock");
+    expect(script).toContain("/var/run/docker/containerd/containerd.pid");
+    expect(script).toContain("pidof dockerd");
   });
 });
 
@@ -90,10 +96,9 @@ describe("mise-msb-bootstrap", () => {
     expect(script).toContain("mise-msb-local-ca-");
   });
 });
-
 describe("stock image generation", () => {
-  test("is pinned to generation 6 (browser-trust)", () => {
-    expect(STOCK_IMAGE_GENERATION).toBe(6);
-    expect(STOCK_IMAGE_TAG).toBe("mise-msb-base:v6");
+  test("is pinned to generation 7 (docker restart fix)", () => {
+    expect(STOCK_IMAGE_GENERATION).toBe(7);
+    expect(STOCK_IMAGE_TAG).toBe("mise-msb-base:v7");
   });
 });

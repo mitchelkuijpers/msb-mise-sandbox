@@ -4,7 +4,9 @@
 // Generation 5: bundles native Google Chrome for OMP browser automation.
 // Generation 6: adds libnss3-tools and a browser-trust bootstrap stage that
 // imports runtime local CAs into Chrome's NSS database.
-export const STOCK_IMAGE_GENERATION = 6;
+// Generation 7: docker-up clears stale dockerd/containerd runtime files so
+// Docker starts after a sandbox stop/restart cycle.
+export const STOCK_IMAGE_GENERATION = 7;
 
 export const STOCK_IMAGE_TAG = `mise-msb-base:v${STOCK_IMAGE_GENERATION}`;
 

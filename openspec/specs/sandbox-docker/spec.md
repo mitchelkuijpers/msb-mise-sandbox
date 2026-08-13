@@ -14,6 +14,11 @@ The stock image SHALL contain Docker CE and an idempotent Docker startup helper.
 - **WHEN** a stopped stock sandbox is started
 - **THEN** the wrapper invokes the idempotent startup helper and verifies Docker readiness before subsequent execution
 
+#### Scenario: Docker restarts despite stale daemon state from previous boot
+- **WHEN** a stopped stock sandbox is started and `/var/run/docker.pid` from the previous boot still references a process that no longer runs (an unreaped zombie counts)
+- **THEN** the startup helper removes the stale dockerd and containerd pidfiles and sockets before launching dockerd
+- **AND** Docker readiness succeeds before subsequent execution
+
 #### Scenario: Docker startup failure blocks user command
 - **WHEN** dockerd cannot become ready in a stock sandbox
 - **THEN** the lifecycle command exits non-zero, reports daemon diagnostics, and does not execute the requested user command
